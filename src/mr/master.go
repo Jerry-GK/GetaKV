@@ -242,9 +242,8 @@ func (m *Master) Done() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	ret := true
 	// Your code here.
-	ret = m.done
+	ret := m.done
 	return ret
 }
 
