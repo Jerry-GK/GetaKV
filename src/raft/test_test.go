@@ -14,15 +14,12 @@ import "time"
 import "math/rand"
 import "sync/atomic"
 import "sync"
-import "../common"
-import "strconv"
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
-	return
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -54,63 +51,39 @@ func TestInitialElection2A(t *testing.T) {
 }
 
 func TestReElection2A(t *testing.T) {
-	round := 0
-	StartTime := time.Now()
-	for {
-		round++
-		servers := 3
-		cfg := make_config(t, servers, false)
+	servers := 3
+	cfg := make_config(t, servers, false)
+	defer cfg.cleanup()
 
-		cfg.begin("Test (2A): election after network failure")
+	cfg.begin("Test (2A): election after network failure")
 
-		common.PrintDebug("checking 1 One")
-		leader1 := cfg.checkOneLeader()
-		common.PrintDebug("checked 1 One true")
+	leader1 := cfg.checkOneLeader()
 
-		// if the leader disconnects, a new one should be elected.
-		cfg.disconnect(leader1)
-		common.PrintDebug("disconnected " + fmt.Sprint(leader1))
-		common.PrintDebug("checking 2 One")
-		cfg.checkOneLeader()
-		common.PrintDebug("checked 2 One true")
+	// if the leader disconnects, a new one should be elected.
+	cfg.disconnect(leader1)
+	cfg.checkOneLeader()
 
-		// if the old leader rejoins, that shouldn't
-		// disturb the new leader.
-		cfg.connect(leader1)
-		common.PrintDebug("connected " + fmt.Sprint(leader1))
-		common.PrintDebug("checking 3 One")
-		leader2 := cfg.checkOneLeader()
-		common.PrintDebug("checked 3 One true")
+	// if the old leader rejoins, that shouldn't
+	// disturb the new leader.
+	cfg.connect(leader1)
+	leader2 := cfg.checkOneLeader()
 
-		// if there's no quorum, no leader should
-		// be elected.
-		cfg.disconnect(leader2)
-		common.PrintDebug("disconnected " + fmt.Sprint(leader2))
-		cfg.disconnect((leader2 + 1) % servers)
-		common.PrintDebug("disconnected " + fmt.Sprint((leader2+1)%servers))
-		time.Sleep(2 * RaftElectionTimeout)
-		common.PrintDebug("checking 4 No")
-		cfg.checkNoLeader()
-		common.PrintDebug("checked 4 No true")
+	// if there's no quorum, no leader should
+	// be elected.
+	cfg.disconnect(leader2)
+	cfg.disconnect((leader2 + 1) % servers)
+	time.Sleep(2 * RaftElectionTimeout)
+	cfg.checkNoLeader()
 
-		// if a quorum arises, it should elect a leader.
-		cfg.connect((leader2 + 1) % servers)
-		common.PrintDebug("connected " + fmt.Sprint((leader2+1)%servers))
-		common.PrintDebug("checking 5 One")
-		cfg.checkOneLeader()
-		common.PrintDebug("checked 5 One true")
+	// if a quorum arises, it should elect a leader.
+	cfg.connect((leader2 + 1) % servers)
+	cfg.checkOneLeader()
 
-		// re-join of last node shouldn't prevent leader from existing.
-		cfg.connect(leader2)
-		common.PrintDebug("connected " + fmt.Sprint(leader2))
-		common.PrintDebug("checking 6 One")
-		cfg.checkOneLeader()
-		common.PrintDebug("checked 6 One true")
+	// re-join of last node shouldn't prevent leader from existing.
+	cfg.connect(leader2)
+	cfg.checkOneLeader()
 
-		cfg.end()
-		cfg.cleanup()
-		println("Round<" + strconv.Itoa(round) + "> finished. Average time per round: " + strconv.FormatFloat(time.Since(StartTime).Seconds()/float64(round), 'f', 6, 64) + "s")
-	}
+	cfg.end()
 }
 
 func TestBasicAgree2B(t *testing.T) {

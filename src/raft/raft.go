@@ -50,12 +50,12 @@ type ApplyMsg struct {
 }
 
 const (
-	ElectionTimeout  = time.Millisecond * 300 // election(both election interval and timeout)
+	ElectionTimeout  = time.Millisecond * 300 // election(both election-check interval and election timeout)
 	HeartBeatTimeout = time.Millisecond * 150 // leader heartbeat
 	ApplyInterval    = time.Millisecond * 100 // apply log
-	RPCSingleTimeout = time.Millisecond * 300
-	RPCBatchTimeout  = RPCSingleTimeout * 5
-	RPCInterval      = time.Millisecond * 20
+	RPCSingleTimeout = time.Millisecond * 100 // may cause too long time to wait for RPC response if too big
+	RPCBatchTimeout  = RPCSingleTimeout * 3   // may cause too many goroutines for RPC calls if too big
+	RPCInterval      = time.Millisecond * 20  // may cause busy loop for RPC retry if too small
 )
 
 type State int
@@ -109,7 +109,6 @@ type Raft struct {
 
 // return currentTerm and whether this server
 // believes it is the leader.
-// must have outer lock
 func (rf *Raft) GetState() (int, bool) {
 	rf.Lock()
 	defer rf.Unlock()
@@ -186,6 +185,7 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RPCHANDLE_RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	//RPC receiver function is locked
 	rf.Lock()
 	defer rf.Unlock()
 	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPCHANDLE_RequestVote from Server[" + strconv.Itoa(args.CandidateId) + "]")
@@ -204,11 +204,11 @@ func (rf *Raft) RPCHANDLE_RequestVote(args *RequestVoteArgs, reply *RequestVoteR
 			//Other Candidate always refuse to vote
 			return
 		} else if rf.state == Follower {
-			rf.resetElectionTimer()
 			if rf.voteFor == -1 {
 				//first vote
 				rf.voteFor = args.CandidateId
 				reply.VoteGranted = true
+				rf.ResetElectionTimer() // reset election timer when first vote for a candidate
 				return
 			} else if rf.voteFor == args.CandidateId {
 				//has voted for this candidate
@@ -229,10 +229,7 @@ func (rf *Raft) RPCHANDLE_RequestVote(args *RequestVoteArgs, reply *RequestVoteR
 		//ans: vote immediately
 
 		//become Follower and vote for the candidate immediately
-		rf.setTerm(args.Term)
-		if rf.state != Follower {
-			rf.changeState(Follower)
-		}
+		rf.ChangeState(Follower, args.Term) //reset election timer in ChangeState
 		rf.voteFor = args.CandidateId
 		reply.VoteGranted = true
 		return
@@ -279,14 +276,19 @@ func (rf *Raft) sendRequestVote(peerIdx int, args *RequestVoteArgs, reply *Reque
 	rpcSingleTimer := time.NewTimer(RPCSingleTimeout)
 	defer rpcSingleTimer.Stop()
 
-	ok := false
-	rTemp := RequestVoteReply{}
-
 	for {
+		rf.Lock()
+		if rf.state != Candidate {
+			rf.Unlock()
+			return false
+		}
+		rf.Unlock()
+
 		rpcSingleTimer.Stop()
 		rpcSingleTimer.Reset(RPCSingleTimeout)
 
 		ch := make(chan bool, 1)
+		rTemp := RequestVoteReply{}
 
 		go func() {
 			//RPC call may
@@ -295,7 +297,11 @@ func (rf *Raft) sendRequestVote(peerIdx int, args *RequestVoteArgs, reply *Reque
 			//3. return after a long time (single RPC call timeout, retry, should ignore the reply)
 			//4. never return (single RPC call timeout, retry, no reply)
 			//give up if batch RPC call timeout after several retries
-			ok = rf.peers[peerIdx].Call("Raft.RPCHANDLE_RequestVote", args, &rTemp)
+			rf.Lock()
+			peer := rf.peers[peerIdx]
+			rf.Unlock()
+			//no lock for parallel RPC call
+			ok := peer.Call("Raft.RPCHANDLE_RequestVote", args, &rTemp)
 			ch <- ok
 		}()
 
@@ -324,17 +330,14 @@ func (rf *Raft) sendRequestVote(peerIdx int, args *RequestVoteArgs, reply *Reque
 	return false //should never reach here
 }
 
-//must have outer lock
 func (rf *Raft) StartElection() {
 	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartElection")
-	//rf.changeState(Candidate) has been called
+	//rf.ChangeState(Candidate) has been called
 	//has an outer lock
 	// rf.Lock()
 	// defer rf.Unlock()
 
-	//internal lock for goroutines it creates
-	internalMu := sync.Mutex{}
-	internalMu.Lock()
+	rf.Lock()
 
 	//parallel request vote from all peers
 	args := &RequestVoteArgs{
@@ -346,7 +349,7 @@ func (rf *Raft) StartElection() {
 
 	//vote for self
 	rf.voteFor = rf.me
-	internalMu.Unlock()
+	rf.Unlock()
 
 	voteGrantedCount := 1
 
@@ -356,14 +359,13 @@ func (rf *Raft) StartElection() {
 		if i != rf.me {
 			go func(ch chan bool, i int) {
 				var reply RequestVoteReply
-				//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: try to send to " + strconv.Itoa(i))
-				internalMu.Lock()
+				rf.Lock()
 				if rf.state != Candidate {
-					internalMu.Unlock()
+					rf.Unlock()
 					ch <- reply.VoteGranted
 					return
 				}
-				internalMu.Unlock()
+				rf.Unlock()
 
 				ok := rf.sendRequestVote(i, args, &reply) //no need to lock (parallel)
 				if !ok {
@@ -371,18 +373,16 @@ func (rf *Raft) StartElection() {
 					return
 				}
 
-				internalMu.Lock()
+				rf.Lock()
 				if reply.Term > rf.term {
 					//candidate should always give up election if receive RPC with higher term
 
-					//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: term out of date")
-					rf.setTerm(reply.Term)
-					rf.changeState(Follower)
-					internalMu.Unlock()
+					rf.ChangeState(Follower, reply.Term)
+					rf.Unlock()
 					ch <- reply.VoteGranted
 					return
 				}
-				internalMu.Unlock()
+				rf.Unlock()
 
 				ch <- reply.VoteGranted
 			}(votesCh, i)
@@ -395,46 +395,45 @@ func (rf *Raft) StartElection() {
 		case g := <-votesCh: //get vote
 			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: get vote " + strconv.FormatBool(g))
 			voteFromOthers++
-
-			internalMu.Lock()
+			rf.Lock()
 			flag := g && rf.state == Candidate
-			internalMu.Unlock()
 
 			if flag {
 				voteGrantedCount++
 				//leader condition: majority votes (more than half)
-				internalMu.Lock()
 				if voteGrantedCount > len(rf.peers)/2 {
 					//no need to wait for all votes if already able to become leader
-					rf.changeState(Leader)
-					//still wait for all votes to return
-					//internalMu.Unlock()
-					//return
+					rf.ChangeState(Leader, rf.term)
+					rf.Unlock()
+					return
 				}
-				internalMu.Unlock()
 			}
 			if voteFromOthers >= len(rf.peers)-1 {
-				internalMu.Lock()
 				if rf.state != Leader {
 					common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: lose election")
-					rf.changeState(Follower)
+					//rf.ChangeState(Follower, rf.term - 1) //is that right?
+					rf.ChangeState(Follower, rf.term)
 				}
-				internalMu.Unlock()
+				rf.Unlock()
 				return
 			}
+			rf.Unlock()
 
 		case <-rf.electionTimer.C: //election timeout, become follower
-			internalMu.Lock()
+			rf.Lock()
 			if rf.state == Candidate {
 				common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: election timeout")
-				//issue: does candidate need to decrease term if fail in election?
+				//issue: does candidate need to decrease term if lose in election?
 				//ans: No?
-				rf.setTerm(rf.term - 1) //is that right?
-				rf.changeState(Follower)
-				//still wait for all votes to return
-				//return
+				//rf.ChangeState(Follower, rf.term - 1) //is that right?
+				rf.ChangeState(Follower, rf.term)
+				rf.Unlock()
+				return
+			} else {
+				//common.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: election timeout, but not candidate")
+				//may be normal?
 			}
-			internalMu.Unlock()
+			rf.Unlock()
 		}
 	}
 
@@ -456,6 +455,7 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) RPCHANDLE_AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	//RPC receiver function is locked
 	rf.Lock()
 	defer rf.Unlock()
 	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPCHANDLE_AppendEntries from Server[" + strconv.Itoa(args.LeaderId) + "]")
@@ -481,10 +481,10 @@ func (rf *Raft) RPCHANDLE_AppendEntries(args *AppendEntriesArgs, reply *AppendEn
 		} else if rf.state == Candidate {
 			//issue: will a candidate change to follower if it receives an AppendEntries RPC from a leader with the same term?
 			//ans: Yes?
-			rf.changeState(Follower)
+			rf.ChangeState(Follower, rf.term)
 			return
 		} else if rf.state == Follower {
-			rf.changeState(Follower)
+			rf.ChangeState(Follower, rf.term)
 			return
 		}
 	} else if args.Term > rf.term {
@@ -494,19 +494,16 @@ func (rf *Raft) RPCHANDLE_AppendEntries(args *AppendEntriesArgs, reply *AppendEn
 			//for example: a leader recovers from failure and receives an AppendEntries RPC from the new leader
 			//what will happen?
 			//ans: the leader should convert to follower and decrease its term
-			rf.setTerm(args.Term)
-			rf.changeState(Follower)
+			rf.ChangeState(Follower, args.Term)
 			return
 		} else if rf.state == Candidate {
 			//issue: will a candidate change to follower
 			//if it receives an AppendEntries RPC from a leader with a larger term?
 			//ans: Yes
-			rf.setTerm(args.Term)
-			rf.changeState(Follower)
+			rf.ChangeState(Follower, args.Term)
 			return
 		} else if rf.state == Follower {
-			rf.setTerm(args.Term)
-			rf.changeState(Follower)
+			rf.ChangeState(Follower, args.Term)
 			return
 		}
 	}
@@ -524,14 +521,20 @@ func (rf *Raft) AppendEntriesToPeer(peerIdx int, args *AppendEntriesArgs, reply 
 	rpcSingleTimer := time.NewTimer(RPCSingleTimeout)
 	defer rpcSingleTimer.Stop()
 
-	ok := false
-	rTemp := AppendEntriesReply{}
-
 	for {
+		rf.Lock()
+		if rf.state != Leader {
+			rf.Unlock()
+			return false
+		}
+		rf.Unlock()
+
 		rpcSingleTimer.Stop()
 		rpcSingleTimer.Reset(RPCSingleTimeout)
 
 		ch := make(chan bool, 1)
+		rTemp := AppendEntriesReply{}
+
 		go func() {
 			//RPC call may
 			//1. return immediately (ok ==  true or ok == false, false may cause busy loop)
@@ -539,14 +542,18 @@ func (rf *Raft) AppendEntriesToPeer(peerIdx int, args *AppendEntriesArgs, reply 
 			//3. return after a long time (single RPC call timeout, retry, should ignore the reply)
 			//4. never return (single RPC call timeout, retry, no reply)
 			//give up if batch RPC call timeout after several retries
-			ok = rf.peers[peerIdx].Call("Raft.RPCHANDLE_AppendEntries", args, &rTemp)
+			rf.Lock()
+			peer := rf.peers[peerIdx]
+			rf.Unlock()
+			//no lock for parallel RPC call
+			ok := peer.Call("Raft.RPCHANDLE_AppendEntries", args, &rTemp)
 			ch <- ok
 		}()
 
 		select {
 		case <-rpcSingleTimer.C:
-			// retry single RPC call
 			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Retry")
+			// retry single RPC call
 			continue
 		case <-rpcBacthTimer.C:
 			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Quit")
@@ -568,68 +575,53 @@ func (rf *Raft) AppendEntriesToPeer(peerIdx int, args *AppendEntriesArgs, reply 
 	return false //should never reach here
 }
 
-//must have outer lock
 func (rf *Raft) StartHeartBeatCheck() {
 	//parallel append empty enyries to all followers
 	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartHeartBeatCheck")
-	//has an outer lock
 	// rf.Lock()
 	// defer rf.Unlock()
 
-	//internal lock for goroutines it creates
-	internalMu := sync.Mutex{}
-
-	ch := make(chan bool, len(rf.peers)) //wait for all peers to reply
-
 	for i := 0; i < len(rf.peers); i++ {
+		rf.Lock()
+		if rf.state != Leader {
+			rf.Unlock()
+			return
+		}
+		rf.Unlock()
+
 		if i != rf.me {
 			go func(i int) {
-				internalMu.Lock()
+				rf.Lock()
 				args := AppendEntriesArgs{rf.term, rf.me, 0, 0, make([]LogEntry, 0), 0}
 				reply := AppendEntriesReply{}
 
 				if rf.state != Leader {
-					internalMu.Unlock()
-					ch <- true
+					rf.Unlock()
 					return
 				}
-				internalMu.Unlock()
+				rf.Unlock()
 
-				ok := rf.AppendEntriesToPeer(i, &args, &reply) //no need to lock (parallel)
+				//no need to lock (parallel)
+				//have internal check for state == Leader
+				ok := rf.AppendEntriesToPeer(i, &args, &reply)
 				if !ok {
-					ch <- true
 					return
 				}
 
-				internalMu.Lock()
+				rf.Lock()
 				if reply.Term > rf.term {
-					//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: term out of date")
-
 					//issue: should the leader update term and change to follower
 					//even receiving from APPENDENTRIES RPC reply from the new candidate?
 					//ans: Yes(candidate first)
-					rf.setTerm(reply.Term)
-					rf.changeState(Follower)
+					rf.ChangeState(Follower, reply.Term)
 				}
-				internalMu.Unlock()
+				rf.Unlock()
 				//Leader will ignore the reply with term <= its own term
-
-				ch <- true
 			}(i)
 		}
 	}
 
-	finishNum := 0
-	for {
-		select {
-		case <-ch:
-			finishNum++
-			if finishNum >= len(rf.peers)-1 {
-				return
-			}
-		}
-	}
-	return //should never reach here
+	return
 }
 
 //
@@ -678,7 +670,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) resetElectionTimer() {
+func (rf *Raft) ResetElectionTimer() {
 	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " reset election timer")
 	rf.electionTimer.Stop()
 	// add random time to avoid all boom at the same time
@@ -686,7 +678,7 @@ func (rf *Raft) resetElectionTimer() {
 	rf.electionTimer.Reset(ElectionTimeout + r)
 }
 
-func (rf *Raft) resetHeartBeatTimer() {
+func (rf *Raft) ResetHeartBeatTimer() {
 	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " reset heartbeat timer")
 	rf.heartBeatTimer.Stop()
 	// add random time to avoid all boom at the same time
@@ -694,18 +686,18 @@ func (rf *Raft) resetHeartBeatTimer() {
 	rf.heartBeatTimer.Reset(HeartBeatTimeout + r)
 }
 
-func (rf *Raft) clearHeartBeatTimer() {
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " clear heartbeat timer")
+func (rf *Raft) HitHeartBeatTimer() {
+	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " clear heartbeat timer")
 	rf.heartBeatTimer.Stop()
 	//almost elapsed immediately
 	rf.heartBeatTimer.Reset(HeartBeatTimeout / 150)
 }
 
-//change the state of the server, usually called combined with setTerm atomically
-//must have outer lock
-func (rf *Raft) changeState(state State) {
+//change the state of the server, update the term
+//must have outer lock!
+func (rf *Raft) ChangeState(state State, term int) {
 	//reset election timer when changing state
-	rf.resetElectionTimer()
+	rf.ResetElectionTimer()
 
 	// enable change to the same state
 	// if state == rf.state {
@@ -714,35 +706,29 @@ func (rf *Raft) changeState(state State) {
 	// 	return
 	// }
 
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) +
-		" changing state to " + StateToString(state))
+	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <State> " + StateToString(rf.state) + " -> " + StateToString(state) + " | <Term> " + strconv.Itoa(rf.term) + " -> " + strconv.Itoa(term))
 
 	rf.state = state
+	rf.term = term
+	rf.voteFor = -1
 
 	switch state {
 	case Follower:
 		//Leader -> Follower because of receiving from sever with higher term
 		//Candidate -> Follower because of receiving from sever with higher term or receiving from leader
-		rf.voteFor = -1
 	case Candidate:
 		//Follower -> Candidate because of election timer elapses
-		rf.setTerm(rf.term + 1)
-		rf.voteFor = -1 //will vote for itself soon
+		//will vote for itself soon
 	case Leader:
 		//Candidate -> Leader because of winning election (vote from majority of servers)
-		rf.voteFor = -1
-		//rf.resetHeartBeatTimer()
+		//rf.ResetHeartBeatTimer()
 
 		//issue: send appendentries immediately or not?
 		//ans: Yes?
-		rf.clearHeartBeatTimer()
+		rf.HitHeartBeatTimer()
+	default:
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: Unknown state " + StateToString(state))
 	}
-}
-
-//must have outer lock
-func (rf *Raft) setTerm(term int) {
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: term " + strconv.Itoa(rf.term) + " -> " + strconv.Itoa(term))
-	rf.term = term
 }
 
 func (rf *Raft) Lock() {
@@ -782,8 +768,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.electionTimer = time.NewTimer(ElectionTimeout)
 	rf.heartBeatTimer = time.NewTimer(HeartBeatTimeout)
-	rf.resetElectionTimer()
-	rf.resetHeartBeatTimer()
+	rf.ResetElectionTimer()
+	rf.ResetHeartBeatTimer()
 
 	rf.stopCh = make(chan struct{})
 
@@ -797,10 +783,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				return
 			case <-rf.heartBeatTimer.C:
 				rf.Lock()
-				if rf.state == Leader {
+				flag := rf.state == Leader
+				rf.Unlock()
+				if flag {
 					rf.StartHeartBeatCheck()
 				}
-				rf.resetHeartBeatTimer()
+				rf.Lock()
+				rf.ResetHeartBeatTimer()
 				rf.Unlock()
 			}
 		}
@@ -814,13 +803,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				return
 			case <-rf.electionTimer.C:
 				rf.Lock()
-				if rf.state == Follower {
-					rf.changeState(Candidate)
+				flag := rf.state == Follower
+				rf.Unlock()
+				if flag {
+					rf.Lock()
+					//increase term when start election
+					rf.ChangeState(Candidate, rf.term+1)
+					rf.Unlock()
 					rf.StartElection()
 				} else {
-					rf.resetElectionTimer()
+					rf.Lock()
+					rf.ResetElectionTimer()
+					rf.Unlock()
 				}
-				rf.Unlock()
 			}
 		}
 	}()
