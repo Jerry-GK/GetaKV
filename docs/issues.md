@@ -23,7 +23,7 @@ Raft的问题：
 
 - 问题7: 当Leader向其他server广播AppendEntries，或Candidate向其他server广播RequestVote时，是否需要等待这些广播全部返回结果？即使可能存在RPC超时？
 
-- 答案：需要。否则可能导致data race？可能降低性能。
+- 答案：不需要。否则严重影响性能。
 
 - 问题8: 是否可能同时存在两个term相等的Leader？
 
@@ -43,15 +43,14 @@ Raft的问题：
     
   - resetElectionTimer的情况
     1. server初始化时
-    
-    2. follower在接收到term相等的Candidate的RequestVote RPC请求、并同意投票时
-    
+    2. Follower在接收到term相等的Candidate的RequestVote RPC请求、并同意投票时
     3. 任何server在发生状态转化时。这包括：
     
       - Follower变成Candidate，发起新选举时（这里是否无所谓？）
       - Candidate竞选成功变成Leader时（这里其实不reset也无所谓）
       - Candidate竞选失败或收到更高term的RPC，变成Follower时（这里必须reset，否则将马上再去竞选）
       - Leader收到更高term的RPC，变成Follower时
-      - Follower接收到term更高的RPC(比如来自新任Leader，或Candidate)、转变为Follower时。
+      - Follower接收到term相等的来自Leader的RPC-AppendEntries时、“转变”为Follower时（这可能是最常见的情况）
+      - Follower接收到term更高的RPC(比如来自新任Leader，或Candidate)、更新term并“转变”为Follower时
     
       

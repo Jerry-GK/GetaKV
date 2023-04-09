@@ -1,6 +1,6 @@
-- [23-2-4] Lab1: MapReduce finished.
+- **[23-2-4] Lab1: MapReduce finished.**
 
-- [23-4-8] Lab2A: Raft Leader Election Finished
+- **[23-4-8] Lab2A: Raft Leader Election Finished**
   - Candidate first
   - Handle election timeout
   - Handle both RPC single timeout and RPC batch timeout (enable RPC retry)
