@@ -1,5 +1,5 @@
-**GetaKV** is a **Shard Key-Value System** based on **Raft**.
-It is based on the lab of **MIT-6.824**.
+**GetaKV** is a **Shard Key/Value System** using **Raft** to support distribution.
+It is based on the labs of **MIT-6.824**.
 
 - **Lab1: MapReduce** ✅
 
