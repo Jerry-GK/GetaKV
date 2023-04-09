@@ -17,10 +17,10 @@ It is based on the lab of **MIT-6.824**.
 - **Lab4: Shard KV**
   
     - Lab4A: Shard Master
-    - Lab4B: Shard Server
+    - Lab4B: Sharded KV Server
     
 - **Improvement**
 
     
 
-Current progress: lab2A finished.
+Current progress: Lab2A finished.
