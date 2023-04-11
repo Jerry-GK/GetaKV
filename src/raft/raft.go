@@ -50,9 +50,17 @@ type ApplyMsg struct {
 }
 
 const (
-	ElectionTimeout  = time.Millisecond * 300 // election(both election-check interval and election timeout)
+	//1. ElectionTimeout is chose randomly in [ElectionTimeoutMin, ElectionTimeoutMax)
+	//2. Min should be not smaller than 2 * HeartBeatTimeout
+	//3. (Max - Min)/2 should be enough for collecting votes
+	//4. Max should not be too big, otherwise it may cause too long time to elect a new leader
+	ElectionTimeoutMin = time.Millisecond * 300 // election(both election-check interval and election timeout), min
+	ElectionTimeoutMax = time.Millisecond * 600 // election(both election-check interval and election timeout), max
+
 	HeartBeatTimeout = time.Millisecond * 150 // leader heartbeat
-	ApplyInterval    = time.Millisecond * 100 // apply log
+
+	ApplyInterval = time.Millisecond * 100 // apply log
+
 	RPCSingleTimeout = time.Millisecond * 100 // may cause too long time to wait for RPC response if too big
 	RPCBatchTimeout  = RPCSingleTimeout * 3   // may cause too many goroutines for RPC calls if too big
 	RPCInterval      = time.Millisecond * 20  // may cause busy loop for RPC retry if too small
@@ -476,7 +484,7 @@ func (rf *Raft) RPCHANDLE_AppendEntries(args *AppendEntriesArgs, reply *AppendEn
 			//ans: Impossible in Raft?!
 			common.PrintException("Server[" + strconv.Itoa(rf.me) +
 				"]: Leader receives AppendEntries RPC from another Leader with the same term " + strconv.Itoa(rf.term))
-			time.Sleep(1000000 * time.Millisecond)
+			common.PanicSystem()
 			return
 		} else if rf.state == Candidate {
 			//issue: will a candidate change to follower if it receives an AppendEntries RPC from a leader with the same term?
@@ -674,16 +682,18 @@ func (rf *Raft) ResetElectionTimer() {
 	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " reset election timer")
 	rf.electionTimer.Stop()
 	// add random time to avoid all boom at the same time
-	r := time.Duration(rand.Int63()) % ElectionTimeout
-	rf.electionTimer.Reset(ElectionTimeout + r)
+	r := time.Duration(rand.Int63())%(ElectionTimeoutMax-ElectionTimeoutMin) + ElectionTimeoutMin
+	rf.electionTimer.Reset(r)
 }
 
 func (rf *Raft) ResetHeartBeatTimer() {
 	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " reset heartbeat timer")
 	rf.heartBeatTimer.Stop()
 	// add random time to avoid all boom at the same time
-	r := time.Duration(rand.Int63()) % HeartBeatTimeout
-	rf.heartBeatTimer.Reset(HeartBeatTimeout + r)
+	//r := time.Duration(rand.Int63()) % HeartBeatTimeout
+	//issue: need HeartBear timer need to be random?
+	//ans: No
+	rf.heartBeatTimer.Reset(HeartBeatTimeout)
 }
 
 func (rf *Raft) HitHeartBeatTimer() {
@@ -766,7 +776,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.logEntries = make([]LogEntry, 0)
 	rf.voteFor = -1
 
-	rf.electionTimer = time.NewTimer(ElectionTimeout)
+	rf.electionTimer = time.NewTimer(ElectionTimeoutMax)
 	rf.heartBeatTimer = time.NewTimer(HeartBeatTimeout)
 	rf.ResetElectionTimer()
 	rf.ResetHeartBeatTimer()
