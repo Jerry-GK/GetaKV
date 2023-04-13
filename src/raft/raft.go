@@ -32,6 +32,11 @@ import (
 // import "bytes"
 // import "../labgob"
 
+// var RPC_AE_TotalCallNum = 0
+// var RPC_RV_TotalCallNum = 0
+// var RPC_ConcurrentCallNum = 0
+// var HeartBeatNum = 0
+
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -59,11 +64,13 @@ const (
 
 	HeartBeatTimeout = time.Millisecond * 150 // leader heartbeat
 
-	ApplyInterval = time.Millisecond * 100 // apply log
+	ApplyTimeout = time.Millisecond * 100 // apply log
 
 	RPCSingleTimeout = time.Millisecond * 100 // may cause too long time to wait for RPC response if too big
-	RPCBatchTimeout  = RPCSingleTimeout * 3   // may cause too many goroutines for RPC calls if too big
+	RPCBatchTimeout  = RPCSingleTimeout * 3   // may cause too many goroutines for RPC calls if too big (disabled for *1)
 	RPCInterval      = time.Millisecond * 20  // may cause busy loop for RPC retry if too small
+
+	HitTinyInterval = time.Millisecond * 5 // hit timer will reset it by this value
 )
 
 type State int
@@ -101,18 +108,31 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	// leader election
 	term       int
-	state      State
+	state      State // 0: follower, 1: candidate, 2: leader
 	logEntries []LogEntry
-	voteFor    int //-1 if not voted yet
+	voteFor    int // -1 if not voted yet
 
 	electionTimer  *time.Timer
 	heartBeatTimer *time.Timer
+	applyTimer     *time.Timer
+
+	// log replication
+	commitIndex int //index of highest log entry known to be committed, initialized to 0, increase monotonically
+	lastApplied int //index of highest log entry applied to state machine, initialized to 0, increase monotonically
+
+	// Leader only. For each server, index of the next log entry to send to that server
+	// Initialized to leader last log index + 1 after election success
+	nextIndex []int
+	// Leader only. For each server, index of highest log entry known to be replicated on server
+	// Initialized to 0 after election success, increase monotonically
+	matchIndex []int
 
 	stopCh chan struct{}
+
+	applyCh chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -168,471 +188,6 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 //
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term         int
-	CandidateId  int
-	LastLogIndex int
-	LastLogTerm  int
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int
-	VoteGranted bool
-}
-
-//
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RPCHANDLE_RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	//RPC receiver function is locked
-	rf.Lock()
-	defer rf.Unlock()
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPCHANDLE_RequestVote from Server[" + strconv.Itoa(args.CandidateId) + "]")
-
-	//default reply: not granted
-	reply.Term = rf.term
-	reply.VoteGranted = false
-
-	if args.Term < rf.term {
-		return
-	} else if args.Term == rf.term {
-		if rf.state == Leader {
-			//Leader always refuse to vote
-			return
-		} else if rf.state == Candidate {
-			//Other Candidate always refuse to vote
-			return
-		} else if rf.state == Follower {
-			if rf.voteFor == -1 {
-				//first vote
-				rf.voteFor = args.CandidateId
-				reply.VoteGranted = true
-				rf.ResetElectionTimer() // reset election timer when first vote for a candidate
-				return
-			} else if rf.voteFor == args.CandidateId {
-				//has voted for this candidate
-				reply.VoteGranted = true
-				return
-			} else {
-				//has voted for other candidate
-				return
-			}
-		}
-	} else if args.Term > rf.term {
-		//issue: should a server update term and change to Follower when receiving RequestVote RPC
-		//from (newly changed) candidate?
-		//espcially for the leader who only lost one APPENDENTRIES RPC to the candidate
-		//ans: Yes(candidare first)
-
-		//issue: really need to vote for the candidate? or just change to Follower?
-		//ans: vote immediately
-
-		//become Follower and vote for the candidate immediately
-		rf.ChangeState(Follower, args.Term) //reset election timer in ChangeState
-		rf.voteFor = args.CandidateId
-		reply.VoteGranted = true
-		return
-	}
-
-}
-
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
-func (rf *Raft) sendRequestVote(peerIdx int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	//no RPC timeout yet
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Send> sendRequestVote to Server[" + strconv.Itoa(peerIdx) + "]")
-
-	rpcBacthTimer := time.NewTimer(RPCBatchTimeout)
-	defer rpcBacthTimer.Stop()
-
-	rpcSingleTimer := time.NewTimer(RPCSingleTimeout)
-	defer rpcSingleTimer.Stop()
-
-	for {
-		rf.Lock()
-		if rf.state != Candidate {
-			rf.Unlock()
-			return false
-		}
-		rf.Unlock()
-
-		rpcSingleTimer.Stop()
-		rpcSingleTimer.Reset(RPCSingleTimeout)
-
-		ch := make(chan bool, 1)
-		rTemp := RequestVoteReply{}
-
-		go func() {
-			//RPC call may
-			//1. return immediately (ok ==  true or ok == false, false may cause busy loop)
-			//2. return after a short time (ok == true or ok == false)
-			//3. return after a long time (single RPC call timeout, retry, should ignore the reply)
-			//4. never return (single RPC call timeout, retry, no reply)
-			//give up if batch RPC call timeout after several retries
-			rf.Lock()
-			peer := rf.peers[peerIdx]
-			rf.Unlock()
-			//no lock for parallel RPC call
-			ok := peer.Call("Raft.RPCHANDLE_RequestVote", args, &rTemp)
-			ch <- ok
-		}()
-
-		select {
-		case <-rpcSingleTimer.C:
-			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Retry")
-			// retry single RPC call
-			continue
-		case <-rpcBacthTimer.C:
-			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Quit")
-			return false
-		case ok := <-ch:
-			if !ok {
-				common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> sendRequestVote to Server[" + strconv.Itoa(peerIdx) + "], Retry")
-				//sleep for a short time to avoid busy loop if RPC call fails immediately
-				time.Sleep(RPCInterval)
-				continue
-				//continue
-			} else {
-				reply.Term = rTemp.Term
-				reply.VoteGranted = rTemp.VoteGranted
-				return ok
-			}
-		}
-	}
-	return false //should never reach here
-}
-
-func (rf *Raft) StartElection() {
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartElection")
-	//rf.ChangeState(Candidate) has been called
-	//has an outer lock
-	// rf.Lock()
-	// defer rf.Unlock()
-
-	rf.Lock()
-
-	//parallel request vote from all peers
-	args := &RequestVoteArgs{
-		Term:         rf.term,
-		CandidateId:  rf.me,
-		LastLogIndex: 0, //no need in lab2A
-		LastLogTerm:  0, //no need in lab2A
-	}
-
-	//vote for self
-	rf.voteFor = rf.me
-	rf.Unlock()
-
-	voteGrantedCount := 1
-
-	votesCh := make(chan bool, len(rf.peers))
-
-	for i := 0; i < len(rf.peers); i++ {
-		if i != rf.me {
-			go func(ch chan bool, i int) {
-				var reply RequestVoteReply
-				rf.Lock()
-				if rf.state != Candidate {
-					rf.Unlock()
-					ch <- reply.VoteGranted
-					return
-				}
-				rf.Unlock()
-
-				ok := rf.sendRequestVote(i, args, &reply) //no need to lock (parallel)
-				if !ok {
-					ch <- false
-					return
-				}
-
-				rf.Lock()
-				if reply.Term > rf.term {
-					//candidate should always give up election if receive RPC with higher term
-
-					rf.ChangeState(Follower, reply.Term)
-					rf.Unlock()
-					ch <- reply.VoteGranted
-					return
-				}
-				rf.Unlock()
-
-				ch <- reply.VoteGranted
-			}(votesCh, i)
-		}
-	}
-
-	voteFromOthers := 0
-	for {
-		select {
-		case g := <-votesCh: //get vote
-			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: get vote " + strconv.FormatBool(g))
-			voteFromOthers++
-			rf.Lock()
-			flag := g && rf.state == Candidate
-
-			if flag {
-				voteGrantedCount++
-				//leader condition: majority votes (more than half)
-				if voteGrantedCount > len(rf.peers)/2 {
-					//no need to wait for all votes if already able to become leader
-					rf.ChangeState(Leader, rf.term)
-					rf.Unlock()
-					return
-				}
-			}
-			if voteFromOthers >= len(rf.peers)-1 {
-				if rf.state != Leader {
-					common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: lose election")
-					//rf.ChangeState(Follower, rf.term - 1) //is that right?
-					rf.ChangeState(Follower, rf.term)
-				}
-				rf.Unlock()
-				return
-			}
-			rf.Unlock()
-
-		case <-rf.electionTimer.C: //election timeout, become follower
-			rf.Lock()
-			if rf.state == Candidate {
-				common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: election timeout")
-				//issue: does candidate need to decrease term if lose in election?
-				//ans: No?
-				//rf.ChangeState(Follower, rf.term - 1) //is that right?
-				rf.ChangeState(Follower, rf.term)
-				rf.Unlock()
-				return
-			} else {
-				//common.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: election timeout, but not candidate")
-				//may be normal?
-			}
-			rf.Unlock()
-		}
-	}
-
-	return //should never reach here
-}
-
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []LogEntry
-	LeaderCommit int
-}
-
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
-}
-
-func (rf *Raft) RPCHANDLE_AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	//RPC receiver function is locked
-	rf.Lock()
-	defer rf.Unlock()
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPCHANDLE_AppendEntries from Server[" + strconv.Itoa(args.LeaderId) + "]")
-
-	//default reply: not success
-	reply.Term = rf.term
-	reply.Success = false
-	if args.Term < rf.term {
-		//issue: if a candidate receives an AppendEntries RPC from a leader with even a smaller term
-		//does it need to convert to follower and decrease its term?
-		//or just ignore the RPC?
-		//ans: No(candidate first)
-		return
-	} else if args.Term == rf.term {
-		reply.Success = true
-		if rf.state == Leader {
-			//issue: is that possible that a leader receives an AppendEntries RPC from a leader with the same term?
-			//ans: Impossible in Raft?!
-			common.PrintException("Server[" + strconv.Itoa(rf.me) +
-				"]: Leader receives AppendEntries RPC from another Leader with the same term " + strconv.Itoa(rf.term))
-			common.PanicSystem()
-			return
-		} else if rf.state == Candidate {
-			//issue: will a candidate change to follower if it receives an AppendEntries RPC from a leader with the same term?
-			//ans: Yes?
-			rf.ChangeState(Follower, rf.term)
-			return
-		} else if rf.state == Follower {
-			rf.ChangeState(Follower, rf.term)
-			return
-		}
-	} else if args.Term > rf.term {
-		reply.Success = true
-		if rf.state == Leader {
-			//issue: if a leader receives an AppendEntries RPC from a leader with a smaller term
-			//for example: a leader recovers from failure and receives an AppendEntries RPC from the new leader
-			//what will happen?
-			//ans: the leader should convert to follower and decrease its term
-			rf.ChangeState(Follower, args.Term)
-			return
-		} else if rf.state == Candidate {
-			//issue: will a candidate change to follower
-			//if it receives an AppendEntries RPC from a leader with a larger term?
-			//ans: Yes
-			rf.ChangeState(Follower, args.Term)
-			return
-		} else if rf.state == Follower {
-			rf.ChangeState(Follower, args.Term)
-			return
-		}
-	}
-
-	//apply, no need to really apply in lab2A
-}
-
-func (rf *Raft) AppendEntriesToPeer(peerIdx int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	//no RPC timeout yet
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Send> AppendEntriedToPeer to Server[" + strconv.Itoa(peerIdx) + "]")
-
-	rpcBacthTimer := time.NewTimer(RPCBatchTimeout)
-	defer rpcBacthTimer.Stop()
-
-	rpcSingleTimer := time.NewTimer(RPCSingleTimeout)
-	defer rpcSingleTimer.Stop()
-
-	for {
-		rf.Lock()
-		if rf.state != Leader {
-			rf.Unlock()
-			return false
-		}
-		rf.Unlock()
-
-		rpcSingleTimer.Stop()
-		rpcSingleTimer.Reset(RPCSingleTimeout)
-
-		ch := make(chan bool, 1)
-		rTemp := AppendEntriesReply{}
-
-		go func() {
-			//RPC call may
-			//1. return immediately (ok ==  true or ok == false, false may cause busy loop)
-			//2. return after a short time (ok == true or ok == false)
-			//3. return after a long time (single RPC call timeout, retry, should ignore the reply)
-			//4. never return (single RPC call timeout, retry, no reply)
-			//give up if batch RPC call timeout after several retries
-			rf.Lock()
-			peer := rf.peers[peerIdx]
-			rf.Unlock()
-			//no lock for parallel RPC call
-			ok := peer.Call("Raft.RPCHANDLE_AppendEntries", args, &rTemp)
-			ch <- ok
-		}()
-
-		select {
-		case <-rpcSingleTimer.C:
-			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Retry")
-			// retry single RPC call
-			continue
-		case <-rpcBacthTimer.C:
-			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Quit")
-			return false
-		case ok := <-ch:
-			if !ok {
-				common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> AppendEntriedToPeer to Server[" + strconv.Itoa(peerIdx) + "] failed, Retry")
-				//sleep for a short time to avoid busy loop if RPC call fails immediately
-				time.Sleep(RPCInterval)
-				continue
-				//continue
-			} else {
-				reply.Term = rTemp.Term
-				reply.Success = rTemp.Success
-				return ok
-			}
-		}
-	}
-	return false //should never reach here
-}
-
-func (rf *Raft) StartHeartBeatCheck() {
-	//parallel append empty enyries to all followers
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartHeartBeatCheck")
-	// rf.Lock()
-	// defer rf.Unlock()
-
-	for i := 0; i < len(rf.peers); i++ {
-		rf.Lock()
-		if rf.state != Leader {
-			rf.Unlock()
-			return
-		}
-		rf.Unlock()
-
-		if i != rf.me {
-			go func(i int) {
-				rf.Lock()
-				args := AppendEntriesArgs{rf.term, rf.me, 0, 0, make([]LogEntry, 0), 0}
-				reply := AppendEntriesReply{}
-
-				if rf.state != Leader {
-					rf.Unlock()
-					return
-				}
-				rf.Unlock()
-
-				//no need to lock (parallel)
-				//have internal check for state == Leader
-				ok := rf.AppendEntriesToPeer(i, &args, &reply)
-				if !ok {
-					return
-				}
-
-				rf.Lock()
-				if reply.Term > rf.term {
-					//issue: should the leader update term and change to follower
-					//even receiving from APPENDENTRIES RPC reply from the new candidate?
-					//ans: Yes(candidate first)
-					rf.ChangeState(Follower, reply.Term)
-				}
-				rf.Unlock()
-				//Leader will ignore the reply with term <= its own term
-			}(i)
-		}
-	}
-
-	return
-}
-
-//
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -647,12 +202,30 @@ func (rf *Raft) StartHeartBeatCheck() {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.Lock()
+	defer rf.Unlock()
+	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Receive Start Command")
+
 	index := -1
-	term := -1
-	isLeader := true
+	term := rf.term
+	isLeader := false
 
 	// Your code here (2B).
+	isLeader = rf.state == Leader
+	if isLeader {
+		index = rf.GetLastLogIndex() + 1
+		term = rf.term
+		//add new log entry
+		newLogEntry := LogEntry{
+			Term:    term,
+			Command: command,
+		}
+		rf.logEntries = append(rf.logEntries, newLogEntry)
+		rf.matchIndex[rf.me] = index
+		rf.persist()
 
+		rf.HitHeartBeatTimer()
+	}
 	return index, term, isLeader
 }
 
@@ -700,15 +273,24 @@ func (rf *Raft) HitHeartBeatTimer() {
 	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " clear heartbeat timer")
 	rf.heartBeatTimer.Stop()
 	//almost elapsed immediately
-	rf.heartBeatTimer.Reset(HeartBeatTimeout / 150)
+	rf.heartBeatTimer.Reset(HitTinyInterval)
+	//or rf.heartBeatTimer.Reset(0)? maybe dangerous
+}
+
+func (rf *Raft) ResetApplyTimer() {
+	rf.applyTimer.Stop()
+	rf.applyTimer.Reset(ApplyTimeout)
+}
+
+func (rf *Raft) HitApplyTimer() {
+	rf.applyTimer.Stop()
+	rf.applyTimer.Reset(HitTinyInterval)
+	//or rf.applyTimer.Reset(0)? maybe dangerous
 }
 
 //change the state of the server, update the term
 //must have outer lock!
 func (rf *Raft) ChangeState(state State, term int) {
-	//reset election timer when changing state
-	rf.ResetElectionTimer()
-
 	// enable change to the same state
 	// if state == rf.state {
 	// 	common.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: " +
@@ -716,11 +298,15 @@ func (rf *Raft) ChangeState(state State, term int) {
 	// 	return
 	// }
 
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <State> " + StateToString(rf.state) + " -> " + StateToString(state) + " | <Term> " + strconv.Itoa(rf.term) + " -> " + strconv.Itoa(term))
-
 	rf.state = state
+	//only reset voteFor if term grows, to ensure at most one vote per term
+	if term > rf.term {
+		rf.voteFor = -1
+	}
 	rf.term = term
-	rf.voteFor = -1
+
+	//reset election timer when changing state
+	rf.ResetElectionTimer()
 
 	switch state {
 	case Follower:
@@ -731,13 +317,85 @@ func (rf *Raft) ChangeState(state State, term int) {
 		//will vote for itself soon
 	case Leader:
 		//Candidate -> Leader because of winning election (vote from majority of servers)
-		//rf.ResetHeartBeatTimer()
+		//initialize nextIndex and matchIndex for each server after election success
+		lastLogIndex := rf.GetLastLogIndex()
+		for i := 0; i < len(rf.peers); i++ {
+			rf.nextIndex[i] = lastLogIndex + 1
+			rf.matchIndex[i] = 0
+		}
 
 		//issue: send appendentries immediately or not?
 		//ans: Yes?
 		rf.HitHeartBeatTimer()
 	default:
 		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: Unknown state " + StateToString(state))
+	}
+}
+
+//must have outer lock!
+func (rf *Raft) GetLastLogIndex() int {
+	//index starts from 1
+	return len(rf.logEntries)
+}
+
+//must have outer lock!
+func (rf *Raft) GetLastLogTerm() int {
+	if len(rf.logEntries) == 0 {
+		return -1
+	}
+	return rf.logEntries[len(rf.logEntries)-1].Term
+}
+
+//must have outer lock!
+func (rf *Raft) GetLogEntryByIndex(index int) LogEntry {
+	//idx := index - rf.lastsnapshotindex
+	if index-1 >= len(rf.logEntries) {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: len = " + strconv.Itoa(len(rf.logEntries)) + " index = " + strconv.Itoa(index) + " ,GetLogEntryByIndex: index out of range!")
+		common.PanicSystem()
+	}
+	return rf.logEntries[index-1]
+}
+
+//return log entries of index left -> right-1 (lofEntries[left-1:right-1])
+//GetLogEntriesByIndexRange(left, 0) = logEntries[left-1:]
+//must have outer lock!
+func (rf *Raft) GetLogEntriesByIndexRange(left int, right int) []LogEntry {
+	if left > right && right != 0 {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: left > right!")
+		common.PanicSystem()
+	}
+	if left < 1 {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: left < 1!")
+		common.PanicSystem()
+	}
+	if right > rf.GetLastLogIndex() {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: right > lastLogIndex!")
+		common.PanicSystem()
+	}
+	if right == 0 {
+		right = rf.GetLastLogIndex() + 1
+	}
+	return rf.logEntries[left-1 : right-1]
+}
+
+//must have outer lock!
+func (rf *Raft) SetCommitIndex(index int) {
+	if index < rf.commitIndex {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot decrease!")
+		common.PanicSystem()
+	}
+	if index > rf.GetLastLogIndex() {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot exceed the last log index!")
+		common.PanicSystem()
+	}
+
+	common.PrintDebug("When set commitIndex, len(logEntries) = " + strconv.Itoa(len(rf.logEntries)))
+
+	rf.commitIndex = index
+
+	if rf.commitIndex > rf.lastApplied {
+		//trigger apply log
+		rf.HitApplyTimer()
 	}
 }
 
@@ -749,6 +407,32 @@ func (rf *Raft) Lock() {
 func (rf *Raft) Unlock() {
 	rf.mu.Unlock()
 	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Unlock")
+}
+
+func (rf *Raft) StartApplyLog() {
+	rf.Lock()
+	defer rf.Unlock()
+
+	var msgs []ApplyMsg
+	msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
+
+	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		msgs = append(msgs, ApplyMsg{
+			CommandValid: true,
+			Command:      rf.GetLogEntryByIndex(i).Command,
+			CommandIndex: i,
+		})
+	}
+
+	if len(msgs) != 0 {
+		common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Start apply non-empry log entries")
+	}
+
+	for _, msg := range msgs {
+		rf.applyCh <- msg
+	}
+
+	rf.lastApplied = rf.commitIndex
 }
 
 //
@@ -778,10 +462,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.electionTimer = time.NewTimer(ElectionTimeoutMax)
 	rf.heartBeatTimer = time.NewTimer(HeartBeatTimeout)
+	rf.applyTimer = time.NewTimer(ApplyTimeout)
 	rf.ResetElectionTimer()
 	rf.ResetHeartBeatTimer()
+	rf.ResetApplyTimer()
 
 	rf.stopCh = make(chan struct{})
+	rf.applyCh = applyCh
+
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
 
 	rf.readPersist(persister.ReadRaftState())
 
@@ -797,6 +490,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				rf.Unlock()
 				if flag {
 					rf.StartHeartBeatCheck()
+					//HeartBeatNum++
 				}
 				rf.Lock()
 				rf.ResetHeartBeatTimer()
@@ -831,8 +525,30 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}()
 
 	//Apply log
-	// go func(){
+	go func() {
+		for {
+			select {
+			case <-rf.stopCh:
+				return
+			case <-rf.applyTimer.C:
+				rf.StartApplyLog()
+				rf.Lock()
+				rf.ResetApplyTimer()
+				rf.Unlock()
+			}
+		}
+	}()
 
+	// Show Counting Variables
+	// go func() {
+	// 	for {
+	// 		common.PrintMessage("HeartBeatNum = " + strconv.Itoa(HeartBeatNum))
+	// 		common.PrintMessage("RPC_AE_TotalCallNum = " + strconv.Itoa(RPC_AE_TotalCallNum))
+	// 		common.PrintMessage("RPC_RV_TotalCallNum = " + strconv.Itoa(RPC_RV_TotalCallNum))
+	// 		common.PrintMessage("RPC_ConcurrentCallNum = " + strconv.Itoa(RPC_ConcurrentCallNum))
+	// 		common.PrintMessage("-----------------------------")
+	// 		time.Sleep(1 * time.Second)
+	// 	}
 	// }()
 
 	return rf
