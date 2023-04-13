@@ -5,11 +5,12 @@ import (
 )
 
 const Enable_Debug = false
+
 const Enable_Warning = true
 const Enable_Exception = true
 
 func PrintDebug(msg string) {
-	if Enable_Debug == true {
+	if Enable_Debug {
 		fmt.Println("[Debug]: " + msg)
 	}
 }

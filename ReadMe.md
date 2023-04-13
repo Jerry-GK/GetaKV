@@ -6,7 +6,7 @@ It is based on the labs of **MIT-6.824**.
 - **Lab2: Raft** ⏳
   
     - Lab2A: Leader Election ✅
-    - Lab2B: Log Replication
+    - Lab2B: Log Replication ✅
     - Lab2C: Persistent Snapshot
     
 - **Lab3: Raft KV**
@@ -23,4 +23,4 @@ It is based on the labs of **MIT-6.824**.
 
     
 
-Current progress: Lab2A finished.
+Current progress: Lab2B finished.
