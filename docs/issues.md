@@ -134,7 +134,7 @@
     		//condition index > 0 is not necessary
     		if index > 0 && rf.GetLastLogIndex() >= index && rf.GetLogEntryByIndex(index).Term != args.Entries[i].Term {
     			//delete all entries after index (truncate)
-    			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Truncate logEntries of index range [1, " + strconv.Itoa(index) + "), last commit index = " + strconv.Itoa(rf.commitIndex))
+    			labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Truncate logEntries of index range [1, " + strconv.Itoa(index) + "), last commit index = " + strconv.Itoa(rf.commitIndex))
     
     			//rf.logEntries = rf.logEntries[:index-1]
     			rf.logEntries = rf.GetLogEntriesByIndexRange(1, index)
@@ -171,6 +171,18 @@
     
 
 ### Lab2C
+
+- 问题1: server的哪些属性需要persist？为什么？
+
+    答案：目前persist的内容是term、voteFor、logEntries。
+
+- 问题1: 本实验persist是持久化到Persister类中，并未持久化到磁盘。有什么区别和影响？
+
+    答案：
+
+- 问题2: 哪些地方需要调用persist函数、进行持久化？
+
+    答案：
 
 
 

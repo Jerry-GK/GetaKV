@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"../common"
+	"../labutil"
 )
 
 type AppendEntriesArgs struct {
@@ -64,7 +64,7 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 	rf.Lock()
 	defer rf.Unlock()
 	if len(args.Entries) > 0 {
-		common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPC_CALLEE_AppendEntries from Server[" + strconv.Itoa(args.LeaderId) + "] (size = " + strconv.Itoa(len(args.Entries)) + ")")
+		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPC_CALLEE_AppendEntries from Server[" + strconv.Itoa(args.LeaderId) + "] (size = " + strconv.Itoa(len(args.Entries)) + ")")
 	}
 
 	//default reply: not success
@@ -86,16 +86,16 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 
 	//Impossible situation: leader receives an AppendEntries RPC from a leader with the same term!
 	if args.Term == rf.term && rf.state == Leader {
-		common.PrintException("Server[" + strconv.Itoa(rf.me) +
+		labutil.PrintException("Server[" + strconv.Itoa(rf.me) +
 			"]: Leader receives AppendEntries RPC from another Leader with the same term " + strconv.Itoa(rf.term))
-		common.PanicSystem()
+		labutil.PanicSystem()
 		return
 	}
 
 	rf.ChangeState(Follower, args.Term) //reset election timer in ChangeState
 
 	if len(args.Entries) != 0 {
-		common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try to append log entries from leader RPC")
+		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try to append log entries from leader RPC")
 	}
 
 	//replicate log entries
@@ -114,7 +114,7 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 		//condition index > 0 is not necessary
 		if index > 0 && rf.GetLastLogIndex() >= index && rf.GetLogEntryByIndex(index).Term != args.Entries[i].Term {
 			//delete all entries after index (truncate)
-			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Truncate logEntries of index range [1, " + strconv.Itoa(index) + "), last commit index = " + strconv.Itoa(rf.commitIndex))
+			labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Truncate logEntries of index range [1, " + strconv.Itoa(index) + "), last commit index = " + strconv.Itoa(rf.commitIndex))
 
 			//rf.logEntries = rf.logEntries[:index-1]
 			rf.SetLogEntries(rf.GetLogEntriesByIndexRange(1, index))
@@ -131,14 +131,14 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 	//5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	//piggyback commitIndex here!
 	if args.LeaderCommit > rf.commitIndex {
-		newCommitIndex := common.MinOfInt(args.LeaderCommit, rf.GetLastLogIndex())
+		newCommitIndex := labutil.MinOfInt(args.LeaderCommit, rf.GetLastLogIndex())
 		//Non-Leader commit log entries
 		rf.SetCommitIndex(newCommitIndex)
-		common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Non-Leader commitIndex updated to " + strconv.Itoa(rf.commitIndex))
+		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Non-Leader commitIndex updated to " + strconv.Itoa(rf.commitIndex))
 	}
 
 	if len(args.Entries) != 0 {
-		common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Append log entries from leader RPC success")
+		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Append log entries from leader RPC success")
 	}
 
 	reply.Success = true
@@ -148,7 +148,7 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	//no RPC timeout yet
 	if len(args.Entries) > 0 {
-		common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Send> RPC_CALLER_AppendEntriesToPeer to Server[" + strconv.Itoa(peerIdx) + "] (size = " + strconv.Itoa(len(args.Entries)) + ")")
+		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Send> RPC_CALLER_AppendEntriesToPeer to Server[" + strconv.Itoa(peerIdx) + "] (size = " + strconv.Itoa(len(args.Entries)) + ")")
 	}
 
 	rpcBacthTimer := time.NewTimer(RPCBatchTimeout)
@@ -192,15 +192,15 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 
 		select {
 		case <-rpcSingleTimer.C:
-			//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Retry")
+			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Retry")
 			// retry single RPC call
 			continue
 		case <-rpcBacthTimer.C:
-			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Quit")
+			labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Quit")
 			return false
 		case ok := <-ch:
 			if !ok {
-				//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> RPC_CALLER_AppendEntriesToPeer to Server[" + strconv.Itoa(peerIdx) + "] failed, Retry")
+				//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> RPC_CALLER_AppendEntriesToPeer to Server[" + strconv.Itoa(peerIdx) + "] failed, Retry")
 				//sleep for a short time to avoid busy loop if RPC call fails immediately
 				time.Sleep(RPCInterval)
 				continue
@@ -216,7 +216,7 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 
 func (rf *Raft) StartHeartBeatCheck() {
 	//parallel append empty enyries to all followers
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartHeartBeatCheck")
+	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartHeartBeatCheck")
 	// rf.Lock()
 	// defer rf.Unlock()
 
@@ -256,6 +256,8 @@ func (rf *Raft) StartHeartBeatCheck() {
 						return
 					}
 
+					//rf.term, rf.state may be different after AE!
+
 					rf.Lock()
 					if reply.Term > rf.term {
 						//issue: should the leader update term and change to follower
@@ -285,13 +287,13 @@ func (rf *Raft) StartHeartBeatCheck() {
 						if rf.nextIndex[i] <= 1 {
 							rf.Unlock()
 							//every try fails
-							common.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: Try AE for every nextIndex all failed!")
+							labutil.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: Try AE for every nextIndex all failed!")
 							return
 						}
 
 						//No fast backup
 						rf.nextIndex[i]--
-						common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Retry AE to Server[" + strconv.Itoa(i) + "], nextIndex = " + strconv.Itoa(rf.nextIndex[i]))
+						labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Retry AE to Server[" + strconv.Itoa(i) + "], nextIndex = " + strconv.Itoa(rf.nextIndex[i]))
 						rf.Unlock()
 						continue
 					}
@@ -308,9 +310,9 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 	//if there exists an N such that N > commitIndex, a majority of matchIndex[i] >= N,
 	//and log[N].term == currentTerm:
 	//set commitIndex = N
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try to UpdateLeaderCommitIndex")
+	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try to UpdateLeaderCommitIndex")
 
-	//common.PrintDebug("rf.commitIndex = " + strconv.Itoa(rf.commitIndex) + ", rf.GetLastLogIndex() = " + strconv.Itoa(rf.GetLastLogIndex()))
+	//labutil.PrintDebug("rf.commitIndex = " + strconv.Itoa(rf.commitIndex) + ", rf.GetLastLogIndex() = " + strconv.Itoa(rf.GetLastLogIndex()))
 	updated := false
 
 	//checking N from large to small
@@ -318,8 +320,9 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 	//for N := rf.GetLastLogIndex(); N >= rf.commitIndex+1; N-- {
 	for N := rf.commitIndex + 1; N <= rf.GetLastLogIndex(); N++ {
 		//check if log[N].term == currentTerm
-		//common.PrintDebug("Checking N = " + strconv.Itoa(N))
+		//labutil.PrintDebug("Checking N = " + strconv.Itoa(N))
 		if rf.GetLogEntryByIndex(N).Term != rf.term {
+			//only commit log entries of current term!
 			continue
 		}
 		count := 0
@@ -329,7 +332,7 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 				if count > len(rf.peers)/2 {
 					//Leader commit log entries
 					rf.SetCommitIndex(N)
-					common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Leader commitIndex updated to " + strconv.Itoa(rf.commitIndex))
+					labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Leader commitIndex updated to " + strconv.Itoa(rf.commitIndex))
 					updated = true
 					break
 				}
@@ -340,6 +343,6 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 		}
 	}
 	if !updated {
-		common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: UpdateLeaderCommitIndex Failed")
+		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: UpdateLeaderCommitIndex Failed")
 	}
 }

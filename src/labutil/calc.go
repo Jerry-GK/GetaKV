@@ -1,4 +1,4 @@
-package common
+package labutil
 
 func MinOfInt(a, b int) int {
 	if a < b {

@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"../common"
+	"../labutil"
 )
 
 //
@@ -36,7 +36,7 @@ func (rf *Raft) RPC_CALLEE_RequestVote(args *RequestVoteArgs, reply *RequestVote
 	//RPC receiver function is locked
 	rf.Lock()
 	defer rf.Unlock()
-	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPC_CALLEE_RequestVote from Server[" + strconv.Itoa(args.CandidateId) + "]")
+	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPC_CALLEE_RequestVote from Server[" + strconv.Itoa(args.CandidateId) + "]")
 
 	//default reply: not granted
 	reply.Term = rf.term
@@ -130,7 +130,7 @@ func (rf *Raft) RPC_CALLEE_RequestVote(args *RequestVoteArgs, reply *RequestVote
 //
 func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	//no RPC timeout yet
-	//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Send> RPC_CALLER_SendRequestVote to Server[" + strconv.Itoa(peerIdx) + "]")
+	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Send> RPC_CALLER_SendRequestVote to Server[" + strconv.Itoa(peerIdx) + "]")
 
 	rpcBacthTimer := time.NewTimer(RPCBatchTimeout)
 	defer rpcBacthTimer.Stop()
@@ -173,15 +173,15 @@ func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, r
 
 		select {
 		case <-rpcSingleTimer.C:
-			//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Retry")
+			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Retry")
 			// retry single RPC call
 			continue
 		case <-rpcBacthTimer.C:
-			//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Quit")
+			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Quit")
 			return false
 		case ok := <-ch:
 			if !ok {
-				//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> RPC_CALLER_SendRequestVote to Server[" + strconv.Itoa(peerIdx) + "], Retry")
+				//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> RPC_CALLER_SendRequestVote to Server[" + strconv.Itoa(peerIdx) + "], Retry")
 				//sleep for a short time to avoid busy loop if RPC call fails immediately
 				time.Sleep(RPCInterval)
 				continue
@@ -197,7 +197,7 @@ func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, r
 }
 
 func (rf *Raft) StartElection() {
-	common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartElection")
+	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartElection")
 	//rf.ChangeState(Candidate) has been called
 	//has an outer lock
 	// rf.Lock()
@@ -240,17 +240,16 @@ func (rf *Raft) StartElection() {
 					return
 				}
 
+				//rf.term, rf.state may be different after RV!
+
 				rf.Lock()
+
 				if reply.Term > rf.term {
 					//candidate should always give up election if receive RPC with higher term
-
 					rf.ChangeState(Follower, reply.Term)
-					rf.Unlock()
-					ch <- reply.VoteGranted
-					return
 				}
-				rf.Unlock()
 
+				rf.Unlock()
 				ch <- reply.VoteGranted
 			}(votesCh, i)
 		}
@@ -260,7 +259,7 @@ func (rf *Raft) StartElection() {
 	for {
 		select {
 		case g := <-votesCh: //get vote
-			//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: get vote " + strconv.FormatBool(g))
+			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: get vote " + strconv.FormatBool(g))
 			voteFromOthers++
 			rf.Lock()
 			flag := g && rf.state == Candidate
@@ -277,7 +276,7 @@ func (rf *Raft) StartElection() {
 			}
 			if voteFromOthers >= len(rf.peers)-1 {
 				if rf.state != Leader {
-					//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: lose election")
+					//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: lose election")
 					//rf.ChangeState(Follower, rf.term - 1) //is that right?
 					rf.ChangeState(Follower, rf.term)
 				}
@@ -289,13 +288,13 @@ func (rf *Raft) StartElection() {
 		case <-rf.electionTimer.C: //election timeout, become follower
 			rf.Lock()
 			if rf.state == Candidate {
-				//common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: election timeout")
+				//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: election timeout")
 				//do not decrease term!
 				rf.ChangeState(Follower, rf.term)
 				rf.Unlock()
 				return
 			} else {
-				//common.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: election timeout, but not candidate")
+				//labutil.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: election timeout, but not candidate")
 				//may be normal?
 			}
 			rf.Unlock()
