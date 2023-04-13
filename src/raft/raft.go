@@ -109,17 +109,19 @@ type Raft struct {
 	dead      int32               // set by Kill()
 
 	// state a Raft server must maintain.
-	// leader election
+
+	// persistent states begin
 	term       int
-	state      State // 0: follower, 1: candidate, 2: leader
 	logEntries []LogEntry
 	voteFor    int // -1 if not voted yet
+	// persistent states end
 
+	state          State // 0: follower, 1: candidate, 2: leader
 	electionTimer  *time.Timer
 	heartBeatTimer *time.Timer
 	applyTimer     *time.Timer
 
-	// log replication
+	// for log replication
 	commitIndex int //index of highest log entry known to be committed, initialized to 0, increase monotonically
 	lastApplied int //index of highest log entry applied to state machine, initialized to 0, increase monotonically
 

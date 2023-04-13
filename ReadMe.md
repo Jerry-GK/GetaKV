@@ -21,6 +21,14 @@ It is based on the labs of **MIT-6.824**.
     
 - **Improvement**
 
-    
+  
 
 Current progress: Lab2B finished.
+
+
+
+Raft Implementation:
+
+<img src="assets/image-20230413133324787.png" alt="image-20230413133324787" style="zoom:50%;" />
+
+<img src="assets/image-20230413133359027.png" alt="image-20230413133359027" style="zoom:40%;" />

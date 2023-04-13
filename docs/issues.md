@@ -167,6 +167,10 @@
 - 问题11: Leader在用某个nextIndex[i]对Follower尝试AE失败(因为inconsistency)，需要降低nextIndex[i] (减一)再尝试。如果该Follower已经宕机很久、错过了很多log entries，那么可能需要循环尝试很多次、比较耗费时间和线程开销，有无优化方法？
 
     答案：原论文5.3节末部分有讲到(**Fast Backup**)。基本思想是让Follower给Leader reply false时，也尽量包含跟日志有关的信息，从而让Leader直接知道nextIndex应该设为多少。论文提到该优化可能意义并不太大，设计上会更复杂、会在Leader和Follower之间交换更多的信息。目前暂未使用Fast Backup。
+    
+    
+
+### Lab2C
 
 
 

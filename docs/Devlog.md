@@ -10,7 +10,7 @@
   - Pass all tests for over 100 times with 3, 5 and 7 servers
   - No real log entry or log constraint
   
-- **[23-4-11] Lab2B: Raft Log Replication Finished**
+- **[23-4-13] Lab2B: Raft Log Replication Finished**
   
   - Simple implementation based on Raft paper, especially on Figure 2
   
