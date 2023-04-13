@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"bytes"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -25,7 +26,7 @@ import (
 	"time"
 
 	"../common"
-
+	"../labgob"
 	"../labrpc"
 )
 
@@ -71,6 +72,9 @@ const (
 	RPCInterval      = time.Millisecond * 20  // may cause busy loop for RPC retry if too small
 
 	HitTinyInterval = time.Millisecond * 5 // hit timer will reset it by this value
+
+	InvalidTerm    = -1
+	InvalidVoteFor = -1
 )
 
 type State int
@@ -109,14 +113,14 @@ type Raft struct {
 	dead      int32               // set by Kill()
 
 	// state a Raft server must maintain.
+	state State // 0: follower, 1: candidate, 2: leader
 
 	// persistent states begin
 	term       int
-	logEntries []LogEntry
 	voteFor    int // -1 if not voted yet
+	logEntries []LogEntry
 	// persistent states end
 
-	state          State // 0: follower, 1: candidate, 2: leader
 	electionTimer  *time.Timer
 	heartBeatTimer *time.Timer
 	applyTimer     *time.Timer
@@ -156,37 +160,40 @@ func (rf *Raft) GetState() (int, bool) {
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
+//must have outer lock!
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	data := rf.GetPersistData()
+	rf.persister.SaveRaftState(data)
 }
 
 //
 // restore previously persisted state.
 //
+//must have outer lock!
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
 	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var term int
+	var voteFor int
+	var logEntries []LogEntry
+	var commitIndex int
+	if d.Decode(&term) != nil ||
+		d.Decode(&voteFor) != nil ||
+		d.Decode(&logEntries) != nil ||
+		d.Decode(&commitIndex) != nil {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: readPersist failed while decoding!")
+		common.PanicSystem()
+	} else {
+		rf.term = term
+		rf.voteFor = voteFor
+		rf.logEntries = logEntries
+		//rf.commitIndex = commitIndex
+	}
 }
 
 //
@@ -222,9 +229,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Term:    term,
 			Command: command,
 		}
-		rf.logEntries = append(rf.logEntries, newLogEntry)
+		//rf.logEntries = append(rf.logEntries, newLogEntry)
+		rf.AppendLogEntries(newLogEntry)
 		rf.matchIndex[rf.me] = index
-		rf.persist()
 
 		rf.HitHeartBeatTimer()
 	}
@@ -290,21 +297,67 @@ func (rf *Raft) HitApplyTimer() {
 	//or rf.applyTimer.Reset(0)? maybe dangerous
 }
 
+//must have outer lock!
+func (rf *Raft) SetVoteFor(voteFor int) {
+	rf.voteFor = voteFor
+	if voteFor != InvalidVoteFor { //avoid redundant persist with ChangeState
+		rf.persist()
+	}
+}
+
+//must have outer lock!
+func (rf *Raft) AppendLogEntries(logEntries ...LogEntry) {
+	rf.logEntries = append(rf.logEntries, logEntries...)
+	rf.persist()
+}
+
+//must have outer lock!
+func (rf *Raft) SetLogEntries(logEntries []LogEntry) {
+	rf.logEntries = logEntries
+	rf.persist()
+}
+
+//must have outer lock!
+func (rf *Raft) SetCommitIndex(index int) {
+	if index < rf.commitIndex {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot decrease!")
+		common.PanicSystem()
+	}
+	if index > rf.GetLastLogIndex() {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot exceed the last log index!")
+		common.PanicSystem()
+	}
+
+	common.PrintDebug("When set commitIndex, len(logEntries) = " + strconv.Itoa(len(rf.logEntries)))
+
+	rf.commitIndex = index
+
+	if rf.commitIndex > rf.lastApplied {
+		//trigger apply log
+		rf.HitApplyTimer()
+	}
+	rf.persist()
+}
+
+//important function, the only way for server to change state or term
 //change the state of the server, update the term
 //must have outer lock!
 func (rf *Raft) ChangeState(state State, term int) {
-	// enable change to the same state
-	// if state == rf.state {
-	// 	common.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: " +
-	//	StateToString(rf.state) + " changing to the same state!")
-	// 	return
-	// }
+	// enable change to the same state / same term
 
 	rf.state = state
+	if term < rf.term {
+		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: Try to decrease term!")
+		common.PanicSystem()
+	}
+
 	//only reset voteFor if term grows, to ensure at most one vote per term
 	if term > rf.term {
-		rf.voteFor = -1
+		rf.SetVoteFor(InvalidVoteFor)
+		//persist for term change and voteFor reset
+		rf.persist()
 	}
+
 	rf.term = term
 
 	//reset election timer when changing state
@@ -381,24 +434,15 @@ func (rf *Raft) GetLogEntriesByIndexRange(left int, right int) []LogEntry {
 }
 
 //must have outer lock!
-func (rf *Raft) SetCommitIndex(index int) {
-	if index < rf.commitIndex {
-		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot decrease!")
-		common.PanicSystem()
-	}
-	if index > rf.GetLastLogIndex() {
-		common.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot exceed the last log index!")
-		common.PanicSystem()
-	}
-
-	common.PrintDebug("When set commitIndex, len(logEntries) = " + strconv.Itoa(len(rf.logEntries)))
-
-	rf.commitIndex = index
-
-	if rf.commitIndex > rf.lastApplied {
-		//trigger apply log
-		rf.HitApplyTimer()
-	}
+func (rf *Raft) GetPersistData() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.term)
+	e.Encode(rf.voteFor)
+	e.Encode(rf.logEntries)
+	e.Encode(rf.commitIndex)
+	data := w.Bytes()
+	return data
 }
 
 func (rf *Raft) Lock() {
@@ -457,10 +501,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	// initialize from state persisted before a crash
-	rf.term = 0
 	rf.state = Follower
+
+	rf.term = 0
+	rf.voteFor = InvalidVoteFor
 	rf.logEntries = make([]LogEntry, 0)
-	rf.voteFor = -1
 
 	rf.electionTimer = time.NewTimer(ElectionTimeoutMax)
 	rf.heartBeatTimer = time.NewTimer(HeartBeatTimeout)
@@ -479,6 +524,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	rf.readPersist(persister.ReadRaftState())
+
+	rf.persist()
 
 	//Leader heartbeat append empty log to followers for failure detection
 	go func() {

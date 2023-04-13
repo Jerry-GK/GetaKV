@@ -55,14 +55,14 @@ func (rf *Raft) RPC_CALLEE_RequestVote(args *RequestVoteArgs, reply *RequestVote
 			//Other Candidate refuse to vote
 			return
 		} else if rf.state == Follower {
-			if rf.voteFor == -1 {
+			if rf.voteFor == InvalidVoteFor {
 				//first vote
 				//election restriction
 				if lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
 					//log condition not satisfied
 					return
 				}
-				rf.voteFor = args.CandidateId
+				rf.SetVoteFor(args.CandidateId)
 				reply.VoteGranted = true
 				rf.ResetElectionTimer() // reset election timer when first vote for a candidate
 				return
@@ -92,7 +92,7 @@ func (rf *Raft) RPC_CALLEE_RequestVote(args *RequestVoteArgs, reply *RequestVote
 			//log condition not satisfied
 			return
 		}
-		rf.voteFor = args.CandidateId
+		rf.SetVoteFor(args.CandidateId)
 		reply.VoteGranted = true
 		return
 	}
@@ -159,6 +159,7 @@ func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, r
 			//3. return after a long time (single RPC call timeout, retry, should ignore the reply)
 			//4. never return (single RPC call timeout, retry, no reply)
 			//give up if batch RPC call timeout after several retries
+			//RPC reply may come in any order
 			rf.Lock()
 			peer := rf.peers[peerIdx]
 			rf.Unlock()
@@ -213,7 +214,7 @@ func (rf *Raft) StartElection() {
 	}
 
 	//vote for self
-	rf.voteFor = rf.me
+	rf.SetVoteFor(rf.me)
 	rf.Unlock()
 
 	voteGrantedCount := 1
@@ -235,6 +236,7 @@ func (rf *Raft) StartElection() {
 				ok := rf.RPC_CALLER_SendRequestVote(i, args, &reply) //no need to lock (parallel)
 				if !ok {
 					ch <- false
+					//RPC wrapper failed should be treated as RequestVote failed, and not retry
 					return
 				}
 

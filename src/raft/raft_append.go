@@ -38,7 +38,7 @@ func (rf *Raft) GetAppendEntriesArgs(peerIdx int) AppendEntriesArgs {
 		//no-empty log to send
 		prevLogIndex = nextIdx - 1
 		if prevLogIndex <= 0 { //first log entry
-			prevLogTerm = -1
+			prevLogTerm = InvalidTerm
 		} else {
 			prevLogTerm = rf.GetLogEntryByIndex(prevLogIndex).Term
 		}
@@ -101,7 +101,7 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 	//replicate log entries
 	//2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if rf.GetLastLogIndex() < args.PrevLogIndex ||
-		(args.PrevLogIndex != 0 && args.PrevLogTerm != -1 &&
+		(args.PrevLogIndex != 0 && args.PrevLogTerm != InvalidTerm &&
 			rf.GetLogEntryByIndex(args.PrevLogIndex).Term != args.PrevLogTerm) {
 		return
 	}
@@ -117,7 +117,7 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 			common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Truncate logEntries of index range [1, " + strconv.Itoa(index) + "), last commit index = " + strconv.Itoa(rf.commitIndex))
 
 			//rf.logEntries = rf.logEntries[:index-1]
-			rf.logEntries = rf.GetLogEntriesByIndexRange(1, index)
+			rf.SetLogEntries(rf.GetLogEntriesByIndexRange(1, index))
 			break
 		} else if index > 0 && rf.GetLastLogIndex() >= index && rf.GetLogEntryByIndex(index).Term == args.Entries[i].Term {
 			max_i_InLog = i
@@ -125,12 +125,14 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 	}
 
 	//4. append any new entries <not already> in the log, don't forget to slice args.Entries!
-	rf.logEntries = append(rf.logEntries, args.Entries[max_i_InLog+1:len(args.Entries)]...)
+	//rf.logEntries = append(rf.logEntries, args.Entries[max_i_InLog+1:len(args.Entries)]...)
+	rf.AppendLogEntries(args.Entries[max_i_InLog+1 : len(args.Entries)]...)
 
 	//5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	//piggyback commitIndex here!
 	if args.LeaderCommit > rf.commitIndex {
 		newCommitIndex := common.MinOfInt(args.LeaderCommit, rf.GetLastLogIndex())
+		//Non-Leader commit log entries
 		rf.SetCommitIndex(newCommitIndex)
 		common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Non-Leader commitIndex updated to " + strconv.Itoa(rf.commitIndex))
 	}
@@ -176,6 +178,7 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 			//3. return after a long time (single RPC call timeout, retry, should ignore the reply)
 			//4. never return (single RPC call timeout, retry, no reply)
 			//give up if batch RPC call timeout after several retries
+			//RPC reply may come in any order
 			rf.Lock()
 			peer := rf.peers[peerIdx]
 			rf.Unlock()
@@ -259,7 +262,6 @@ func (rf *Raft) StartHeartBeatCheck() {
 						//even receiving from APPENDENTRIES RPC reply from the new candidate?
 						//ans: Yes(candidate first)
 						rf.ChangeState(Follower, reply.Term)
-						rf.persist()
 					}
 
 					//isssue: does the server need to response to AE reply if it is not current leader?
@@ -325,6 +327,7 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 			if rf.matchIndex[i] >= N {
 				count++
 				if count > len(rf.peers)/2 {
+					//Leader commit log entries
 					rf.SetCommitIndex(N)
 					common.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Leader commitIndex updated to " + strconv.Itoa(rf.commitIndex))
 					updated = true
