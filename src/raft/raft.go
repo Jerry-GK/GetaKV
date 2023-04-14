@@ -543,7 +543,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				flag := rf.state == Leader
 				rf.Unlock()
 				if flag {
-					rf.StartHeartBeatCheck()
+					rf.StartHeartBeat()
 					//HeartBeatNum++
 				}
 				rf.Lock()

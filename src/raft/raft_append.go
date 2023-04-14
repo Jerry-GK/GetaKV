@@ -217,13 +217,13 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 	return false //should never reach here
 }
 
-func (rf *Raft) StartHeartBeatCheck() {
+func (rf *Raft) StartHeartBeat() {
 	//parallel append empty enyries to all followers
-	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartHeartBeatCheck")
+	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartHeartBeat")
 	// rf.Lock()
 	// defer rf.Unlock()
 
-	for i := 0; i < len(rf.peers); i++ {
+	for ii := 0; ii < len(rf.peers); ii++ {
 		rf.Lock()
 		if rf.state != Leader {
 			rf.Unlock()
@@ -231,7 +231,7 @@ func (rf *Raft) StartHeartBeatCheck() {
 		}
 		rf.Unlock()
 
-		if i != rf.me {
+		if ii != rf.me {
 			go func(i int) {
 				//try different nextIndex[i]
 				for !rf.killed() {
@@ -305,7 +305,7 @@ func (rf *Raft) StartHeartBeatCheck() {
 
 				}
 				return //should never reach here
-			}(i)
+			}(ii)
 		}
 	}
 }

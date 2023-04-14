@@ -48,13 +48,13 @@
 
     这套逻辑有如下几个关键点
 
-    - 对外部而言，Caller相当于一次有retry保证的稳定RPC调用，对其信任。如果Caller返回失败，外部调用者讲不再重新尝试。这意味着对于AE，如果AE Caller失败，将放弃AE、在下一次HeartBeat来临时再次尝试AE(延迟机制)；对于RV，RV Caller失败直接认为争取投票失败，没有任何重试。
+    - 对外部而言，Caller相当于一次有retry保证的稳定RPC调用，对其信任。如果Caller返回失败，外部调用者讲不再重新尝试。这意味着对于AE，如果AE Caller失败，将放弃AE、在下一次HeartBeat来临时再次尝试AE(延迟覆盖机制)；对于RV，RV Caller失败直接认为争取投票失败，没有任何重试。
 
-        注意与延迟机制相反的是外部重试机制：Caller只真正调用最多一次，失败(RPC返回失败或ST超时)直接返回。外部进行重试。这样封装性不好，且难以处理长延迟的RPC返回。
+        注意与延迟覆盖机制相反的是外部重试机制：Caller只真正调用最多一次，失败(RPC返回失败或ST超时)直接返回。外部进行重试。这样封装性不好，且难以处理长延迟的RPC返回。
 
     - Caller的超时时间RPCBatchTimeout决定了系统能承受的最长RPC延迟，一切长于BT的RPC响应都不可能被接收到。
 
-        BT过长将导致上层goroutine不及时退出，另外可能在Caller内产生过多的RPC调用，削弱延迟机制的作用。
+        BT过长将导致上层goroutine不及时退出，另外可能在Caller内产生过多的RPC调用，削弱延迟覆盖机制的作用。
 
         BT过短会导致响应时间稍长的RPC全部被忽略，如果网络延迟高可能导致系统无法更新数据（比如2C的Figure8(not reliable)测试点）。
 
@@ -74,10 +74,11 @@
 
     答案：RPC调用次数是衡量系统开销的重要指标，可以采用这些办法减少RPC调用
     
-    - AE采用延迟机制，不在外部重试RPC。
+    - AE采用延迟覆盖机制，不在外部重试RPC。
     - 减小RPCBatchTimeout
     - 增大RPCSingleTimeout
     - 采用Fast Backup，减少AE次数（也就是AE Caller调用的次数）。
+    - 给每个server单独设置HeartBeat Timer + 非延迟覆盖机制 + 阻塞AE。能有效减少RPC，但会导致Leader发起AE频率降低，可能导致其他问题？
     
     实践中RPC数量仍然较多，有很大优化空间。
     

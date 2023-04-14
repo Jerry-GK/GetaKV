@@ -223,8 +223,8 @@ func (rf *Raft) StartElection() {
 
 	votesCh := make(chan bool, len(rf.peers))
 
-	for i := 0; i < len(rf.peers); i++ {
-		if i != rf.me {
+	for ii := 0; ii < len(rf.peers); ii++ {
+		if ii != rf.me {
 			go func(ch chan bool, i int) {
 				var reply RequestVoteReply
 				rf.Lock()
@@ -254,7 +254,7 @@ func (rf *Raft) StartElection() {
 
 				rf.Unlock()
 				ch <- reply.VoteGranted
-			}(votesCh, i)
+			}(votesCh, ii)
 		}
 	}
 
