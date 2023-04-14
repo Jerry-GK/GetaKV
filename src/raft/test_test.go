@@ -8,12 +8,14 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
@@ -551,7 +553,6 @@ loop:
 }
 
 func TestPersist12C(t *testing.T) {
-	return
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -598,7 +599,6 @@ func TestPersist12C(t *testing.T) {
 }
 
 func TestPersist22C(t *testing.T) {
-	return
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -645,7 +645,6 @@ func TestPersist22C(t *testing.T) {
 }
 
 func TestPersist32C(t *testing.T) {
-	return
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -686,7 +685,6 @@ func TestPersist32C(t *testing.T) {
 // haven't been committed yet.
 //
 func TestFigure82C(t *testing.T) {
-	return
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
@@ -743,7 +741,6 @@ func TestFigure82C(t *testing.T) {
 }
 
 func TestUnreliableAgree2C(t *testing.T) {
-	return
 	servers := 5
 	cfg := make_config(t, servers, true)
 	defer cfg.cleanup()
@@ -772,9 +769,7 @@ func TestUnreliableAgree2C(t *testing.T) {
 	cfg.end()
 }
 
-//???
 func TestFigure8Unreliable2C(t *testing.T) {
-	//return
 	servers := 5
 	cfg := make_config(t, servers, true)
 	defer cfg.cleanup()
@@ -824,7 +819,6 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		}
 	}
 
-	//fail to reach agreement
 	cfg.one(rand.Int()%10000, servers, true)
 
 	cfg.end()
@@ -976,11 +970,9 @@ func internalChurn(t *testing.T, unreliable bool) {
 }
 
 func TestReliableChurn2C(t *testing.T) {
-	return
 	internalChurn(t, false)
 }
 
 func TestUnreliableChurn2C(t *testing.T) {
-	return
 	internalChurn(t, true)
 }

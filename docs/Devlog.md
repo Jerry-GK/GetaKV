@@ -4,7 +4,7 @@
 - **[23-4-8] Lab2A: Raft Leader Election Finished**
   - Candidate first
   - Handle election timeout
-  - Handle both RPC single timeout and RPC batch timeout (enable RPC retry)
+  - RPC Caller, Handle both RPC single timeout and RPC batch timeout (enable RPC retry)
   - Parallel RPC calls to other servers (RPC call is not locked)
   - Pass all tests for over 100 times with 3, 5 and 7 servers
   - No real log entry or log constraint
@@ -14,9 +14,12 @@
   
   - Slow Backup without follower's reply for nextIndex for AE
   
-  - Reduce the number of RPC calls
+  - Reduce the number of RPC calls (partially)
+  
+  - Delay mechanism for AE Caller failure
   
   - Pass all tests for over 1500 times
 - **[23-4-13] Lab2C: Raft Persistent States**
   - Unified method for modifying persistent states, which calls persist()
+  - Pass all tests for over 600 times
 

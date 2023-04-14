@@ -191,12 +191,14 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 		}()
 
 		select {
+		case <-rf.stopCh:
+			return false
 		case <-rpcSingleTimer.C:
-			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Retry")
+			//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Retry")
 			// retry single RPC call
 			continue
 		case <-rpcBacthTimer.C:
-			labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Quit")
+			//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Quit")
 			return false
 		case ok := <-ch:
 			if !ok {
@@ -205,6 +207,7 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 				time.Sleep(RPCInterval)
 				continue
 			} else {
+				//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Not Time Out, Success")
 				reply.Term = rTemp.Term
 				reply.Success = rTemp.Success
 				return ok
@@ -240,6 +243,7 @@ func (rf *Raft) StartHeartBeatCheck() {
 					reply := AppendEntriesReply{}
 
 					if rf.state != Leader {
+						//almost unreachable
 						rf.Unlock()
 						return
 					}
@@ -249,11 +253,11 @@ func (rf *Raft) StartHeartBeatCheck() {
 					//have internal check for state == Leader
 					ok := rf.RPC_CALLER_AppendEntriesToPeer(i, &args, &reply)
 					if !ok {
-						//issue: try indifinitely or give up if RPC(wrapper) call fails?
+						//issue: try indifinitely or give up if RPC(Caller) call fails?
 						//ans: give up. retry in next heartbeat AE
+						return
 						//retry to AE forever until success or not current leader anymore
 						//continue
-						return
 					}
 
 					//rf.term, rf.state may be different after AE!
@@ -287,13 +291,14 @@ func (rf *Raft) StartHeartBeatCheck() {
 						if rf.nextIndex[i] <= 1 {
 							rf.Unlock()
 							//every try fails
-							labutil.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: Try AE for every nextIndex all failed!")
+							//issue: is that normal?
+							labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try AE for every nextIndex all failed!")
 							return
 						}
 
 						//No fast backup
 						rf.nextIndex[i]--
-						labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Retry AE to Server[" + strconv.Itoa(i) + "], nextIndex = " + strconv.Itoa(rf.nextIndex[i]))
+						//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: Retry AE to Server[" + strconv.Itoa(i) + "], nextIndex = " + strconv.Itoa(rf.nextIndex[i]))
 						rf.Unlock()
 						continue
 					}
@@ -339,7 +344,7 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 			}
 		}
 		if updated {
-			break //no need to check smaller N
+			break //no need to check larger N
 		}
 	}
 	if !updated {

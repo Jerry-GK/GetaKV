@@ -8,6 +8,81 @@
 
 ## lab2
 
+- 问题1: 如何进行RPC调用？
+
+    答案：对每种RPC(AE, RV), 设计了一个RPC Caller，是对RPC调用的包装。在这个函数中会对指定server发送RPC请求，接受reply(但不处理reply，交给上层)。Caller返回bool值表示是否RPC调用成功(千万注意这跟AE reply里success、RV reply里VoteGranted的区别)。
+
+    Caller内可能存在多次RPC调用。设置了RPCSingleTimer和RPCBatchTimer(以下简称ST和BT)。Caller内的大致逻辑是：
+
+    ```go
+    func (rf *Raft)Caller(peerIdx, args, reply) bool{
+      ResetTimer(BatchTimer, BTTimeout)
+      
+      for{
+        ResetTimer(SingleTimer, STTimeout)
+        go func{
+          ok := rf.peers[peerIdx].Call("Callee", args, reply) //真正的RPC调用，可能很久才返回甚至不返回？
+          ch <- ok //告诉Caller某个RPC调用返回了结果。
+        }()
+        
+        select{
+        case <-SingleTimer.C:
+          //单次超时，重试。注意上一个goroutine的RPC调用可能还在传输中、可以被接收
+          //经测试大多数RPC Call发生在disconnect发生后在此重试发送！
+        	continue 
+        case <-BatchTimer.C:
+          return false //超过总时间BT，直接认为RPC Call失败，传输中的RPC调用全部作废
+        case ok := <-ch
+          if !ok{
+            sleep(RPCInterval) //防止马上返回错误重试导致busy loop
+            continue //重试。
+          }else{
+            return ok //某次RPC调用成功，第一个被接收的就是Caller返回的结果
+          }
+        }
+      }
+      //never reach here
+    }
+     
+    ```
+
+    这套逻辑有如下几个关键点
+
+    - 对外部而言，Caller相当于一次有retry保证的稳定RPC调用，对其信任。如果Caller返回失败，外部调用者讲不再重新尝试。这意味着对于AE，如果AE Caller失败，将放弃AE、在下一次HeartBeat来临时再次尝试AE(延迟机制)；对于RV，RV Caller失败直接认为争取投票失败，没有任何重试。
+
+        注意与延迟机制相反的是外部重试机制：Caller只真正调用最多一次，失败(RPC返回失败或ST超时)直接返回。外部进行重试。这样封装性不好，且难以处理长延迟的RPC返回。
+
+    - Caller的超时时间RPCBatchTimeout决定了系统能承受的最长RPC延迟，一切长于BT的RPC响应都不可能被接收到。
+
+        BT过长将导致上层goroutine不及时退出，另外可能在Caller内产生过多的RPC调用，削弱延迟机制的作用。
+
+        BT过短会导致响应时间稍长的RPC全部被忽略，如果网络延迟高可能导致系统无法更新数据（比如2C的Figure8(not reliable)测试点）。
+
+        BT的存在合理性是个问题，理论上可以让Caller无限尝试。
+
+    - RPCSingleTimer的作用是在认为RPC单次调用可能失败的情况下再发起一个调用，这样，网络中会有统一逻辑RPC的多个调用，有一个成功被Caller收到成功的reply即可返回，增大成功的可能性。
+
+        ST过长会导致重试频率低、Caller的成功率低。
+
+        ST过短会导致RPC调用过多。
+
+    - RPC调用返回给ok如果是false，将在Caller内重新尝试而不是直接返回false。这里要设置一个RPCInterval，否则如果RPC调用马上返回false，会导致busy loop。
+
+    
+
+- 问题2: 如何想办法减少RPC调用次数？
+
+    答案：RPC调用次数是衡量系统开销的重要指标，可以采用这些办法减少RPC调用
+    
+    - AE采用延迟机制，不在外部重试RPC。
+    - 减小RPCBatchTimeout
+    - 增大RPCSingleTimeout
+    - 采用Fast Backup，减少AE次数（也就是AE Caller调用的次数）。
+    
+    实践中RPC数量仍然较多，有很大优化空间。
+    
+    
+
 ### Lab2A
 
 场景P：一切正常，所有server工作正常、term都跟leader一样为1时，假如有一个server与leader通信出错或超时、没有对RPC-APPENDENTRIES响应(但跟其他大部分但不是全部follower通信正常)，于是它term变成了2，成为candidate。假设此时又跟leader恢复了通信。
@@ -161,12 +236,14 @@
 - 问题10: Leader在HearteBeat时对某个server进行AE失败，是否需要一直重新尝试？还是放弃AE在下次HearteBeat中再尝试？
 
     答案：如果一直重新尝试AE，会导致有连接异常的时候产生大量RPC Call(和goroutine)。如果不重复尝试，会不会有问题？(答案似乎是不会，论文中的 If followers crash or run slowly, or if network packets are lost, the leader retries Append- Entries RPCs indefinitely (even after it has responded to the client) until all followers eventually store all log en- tries. 意思似乎是在不断的HeartBeat中进行retry AE，而不是一次HeartBeat中都要不断重试AE)。经过实验测试，如果单HearteBeat内不断尝试AE，会导致某一测试集下的RPC Call总数从2000提升到接近80000，而不重试也不会出错。
-    
-    注意投票中，如果RV失败，直接认为没有争取到投票、不会重试。
+
+    所以本实验中，RPC Caller内部可能多次重试RPC请求，但不会超过RPCBatchTimeout；对于外部，一但Caller返回失败(超时)，就不再尝试，而是在下一次心跳产生的AE中再尝试。
+
+    注意投票中，如果RV失败，也是直接认为没有争取到投票、不会重试。
 
 - 问题11: Leader在用某个nextIndex[i]对Follower尝试AE失败(因为inconsistency)，需要降低nextIndex[i] (减一)再尝试。如果该Follower已经宕机很久、错过了很多log entries，那么可能需要循环尝试很多次、比较耗费时间和线程开销，有无优化方法？
 
-    答案：原论文5.3节末部分有讲到(**Fast Backup**)。基本思想是让Follower给Leader reply false时，也尽量包含跟日志有关的信息，从而让Leader直接知道nextIndex应该设为多少。论文提到该优化可能意义并不太大，设计上会更复杂、会在Leader和Follower之间交换更多的信息。目前暂未使用Fast Backup。
+    答案：原论文5.3节末部分有讲到(**Fast Backup**)。基本思想是让Follower给Leader reply false时，也尽量包含跟日志有关的信息，从而让Leader直接知道nextIndex应该设为多少。论文提到该优化可能意义并不太大，设计上会更复杂、会在Leader和Follower之间交换更多的信息。**目前暂未使用Fast Backup**。
     
     
 
@@ -174,15 +251,19 @@
 
 - 问题1: server的哪些属性需要persist？为什么？
 
-    答案：目前persist的内容是term、voteFor、logEntries。
+    答案：目前persist的内容是term、voteFor、logEntries。这些内容与数据本身的内容、一致性有关，且影响选举。
+
+    注意commitIndex可以不持久化，某些被提交的logEntry可能在崩溃发生后可能存在被recommit、reapply的情况？
 
 - 问题1: 本实验persist是持久化到Persister类中，并未持久化到磁盘。有什么区别和影响？
 
-    答案：
+    答案：Persist类应该是一种模拟持久化的封装类。具体不清楚，后续可能需要真正持久化到磁盘。
 
 - 问题2: 哪些地方需要调用persist函数、进行持久化？
 
-    答案：
+    答案：所有更改持久化属性的地方。lab中给持久化属性单独设立了Set接口，多数修改持久化属性的地方只能通过Set接口设置，Set内保证设置不同的值后马上persist。
+    
+    这样其实会导致persist很频繁，如果持久化到磁盘会效率低，可能有优化方法？
 
 
 

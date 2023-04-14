@@ -172,6 +172,8 @@ func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, r
 		}()
 
 		select {
+		case <-rf.stopCh:
+			return false
 		case <-rpcSingleTimer.C:
 			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Retry")
 			// retry single RPC call
@@ -236,7 +238,8 @@ func (rf *Raft) StartElection() {
 				ok := rf.RPC_CALLER_SendRequestVote(i, args, &reply) //no need to lock (parallel)
 				if !ok {
 					ch <- false
-					//RPC wrapper failed should be treated as RequestVote failed, and not retry
+					//RPC Caller failed should be treated as RequestVote failed, and not retry
+					//issue: maybe should written in a loop(for !killed()) and retry?
 					return
 				}
 
@@ -258,6 +261,8 @@ func (rf *Raft) StartElection() {
 	voteFromOthers := 0
 	for {
 		select {
+		case <-rf.stopCh:
+			return
 		case g := <-votesCh: //get vote
 			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: get vote " + strconv.FormatBool(g))
 			voteFromOthers++
@@ -295,7 +300,7 @@ func (rf *Raft) StartElection() {
 				return
 			} else {
 				//labutil.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: election timeout, but not candidate")
-				//may be normal?
+				//issue: is that normal?
 			}
 			rf.Unlock()
 		}

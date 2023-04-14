@@ -3,13 +3,13 @@ It is based on the labs of **MIT-6.824**.
 
 - **Lab1: MapReduce** ✅
 
-- **Lab2: Raft** ⏳
+- **Lab2: Raft** ✅
   
     - Lab2A: Leader Election ✅
     - Lab2B: Log Replication ✅
-    - Lab2C: Persistent States
+    - Lab2C: Persistent States ✅
     
-- **Lab3: Raft KV**
+- **Lab3: Raft KV** ⏳
   
     - Lab3A: KV on Raft
     - Lab3B: Log Compaction / Snapshot

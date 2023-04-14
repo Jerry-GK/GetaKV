@@ -25,9 +25,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"../labutil"
 	"../labgob"
 	"../labrpc"
+	"../labutil"
 )
 
 // import "bytes"
@@ -67,9 +67,14 @@ const (
 
 	ApplyTimeout = time.Millisecond * 100 // apply log
 
-	RPCSingleTimeout = time.Millisecond * 100 // may cause too long time to wait for RPC response if too big
-	RPCBatchTimeout  = RPCSingleTimeout * 3   // may cause too many goroutines for RPC calls if too big (disabled for *1)
-	RPCInterval      = time.Millisecond * 20  // may cause busy loop for RPC retry if too small
+	// RPCSingleTimeout: may cause too long time to wait for a single RPC response if too big
+	// RPCSingleTimeout: may canuse too many RPC Calls if too small
+	RPCSingleTimeout = time.Millisecond * 100
+	// RPCBatchTimeout: may ignore all RPC with long latency if too small
+	// RPCBatchTimeout: may cause more RPC Calls and too long time to wait for a batch RPC response(in a RPC Caller) if too big,
+	// which can be replaced by retry in the new RPC Caller of a new HeartBeat
+	RPCBatchTimeout = time.Millisecond * 3000
+	RPCInterval     = time.Millisecond * 20 // RPCInterval: may cause busy loop for RPC retry if too small
 
 	HitTinyInterval = time.Millisecond * 5 // hit timer will reset it by this value
 
@@ -181,18 +186,15 @@ func (rf *Raft) readPersist(data []byte) {
 	var term int
 	var voteFor int
 	var logEntries []LogEntry
-	var commitIndex int
 	if d.Decode(&term) != nil ||
 		d.Decode(&voteFor) != nil ||
-		d.Decode(&logEntries) != nil ||
-		d.Decode(&commitIndex) != nil {
+		d.Decode(&logEntries) != nil {
 		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: readPersist failed while decoding!")
 		labutil.PanicSystem()
 	} else {
 		rf.term = term
 		rf.voteFor = voteFor
 		rf.logEntries = logEntries
-		//rf.commitIndex = commitIndex
 	}
 }
 
@@ -336,7 +338,6 @@ func (rf *Raft) SetCommitIndex(index int) {
 		//trigger apply log
 		rf.HitApplyTimer()
 	}
-	rf.persist()
 }
 
 //important function, the only way for server to change state or term
@@ -445,7 +446,6 @@ func (rf *Raft) GetPersistData() []byte {
 	e.Encode(rf.term)
 	e.Encode(rf.voteFor)
 	e.Encode(rf.logEntries)
-	e.Encode(rf.commitIndex)
 	data := w.Bytes()
 	return data
 }
@@ -593,14 +593,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		}
 	}()
 
-	// Show Counting Variables
+	// //Show Counting Variables
 	// go func() {
 	// 	for {
-	// 		labutil.PrintMessage("HeartBeatNum = " + strconv.Itoa(HeartBeatNum))
-	// 		labutil.PrintMessage("RPC_AE_TotalCallNum = " + strconv.Itoa(RPC_AE_TotalCallNum))
-	// 		labutil.PrintMessage("RPC_RV_TotalCallNum = " + strconv.Itoa(RPC_RV_TotalCallNum))
-	// 		labutil.PrintMessage("RPC_ConcurrentCallNum = " + strconv.Itoa(RPC_ConcurrentCallNum))
-	// 		labutil.PrintMessage("-----------------------------")
+	// 		//labutil.PrintMessage("HeartBeatNum = " + strconv.Itoa(HeartBeatNum))
+	// 		//labutil.PrintMessage("RPC_AE_TotalCallNum = " + strconv.Itoa(RPC_AE_TotalCallNum))
+	// 		//labutil.PrintMessage("RPC_RV_TotalCallNum = " + strconv.Itoa(RPC_RV_TotalCallNum))
+	// 		//labutil.PrintMessage("RPC_ConcurrentCallNum = " + strconv.Itoa(RPC_ConcurrentCallNum))
+	// 		//labutil.PrintMessage("-----------------------------")
 	// 		time.Sleep(1 * time.Second)
 	// 	}
 	// }()
