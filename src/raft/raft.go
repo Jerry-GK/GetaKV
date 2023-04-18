@@ -198,6 +198,12 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
+func (rf *Raft) SavePersistAndSnapshot(state []byte, snapshot []byte) {
+	rf.Lock()
+	defer rf.Unlock()
+	rf.persister.SaveStateAndSnapshot(state, snapshot)
+}
+
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -215,6 +221,7 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.Lock()
 	defer rf.Unlock()
+	//println("Start Command")
 	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Receive Start Command")
 
 	index := -1
@@ -321,6 +328,7 @@ func (rf *Raft) SetLogEntries(logEntries []LogEntry) {
 
 //must have outer lock!
 func (rf *Raft) SetCommitIndex(index int) {
+	//println("Set Commit Index = " + strconv.Itoa(index))
 	if index < rf.commitIndex {
 		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot decrease!")
 		labutil.PanicSystem()
@@ -462,7 +470,6 @@ func (rf *Raft) Unlock() {
 
 func (rf *Raft) StartApplyLog() {
 	rf.Lock()
-	defer rf.Unlock()
 
 	var msgs []ApplyMsg
 	msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
@@ -479,11 +486,17 @@ func (rf *Raft) StartApplyLog() {
 		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Start apply non-empry log entries")
 	}
 
-	for _, msg := range msgs {
-		rf.applyCh <- msg
-	}
+	rf.Unlock()
 
-	rf.lastApplied = rf.commitIndex
+	//lock has to be released before sending to applyCh(whose size may be 1)
+	for _, msg := range msgs {
+		//println("Try to apply msg")
+		rf.applyCh <- msg
+		rf.Lock()
+		rf.lastApplied = msg.CommandIndex
+		rf.Unlock()
+		//println("Applied msg")
+	}
 }
 
 //

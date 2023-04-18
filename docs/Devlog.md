@@ -22,4 +22,30 @@
 - **[23-4-13] Lab2C: Raft Persistent States**
   - Unified method for modifying persistent states, which calls persist()
   - Pass all tests for over 600 times
+- **[23-4-18] Lab3A: KV Raft without Log Compaction**
+  - Increasing MsgId of client request to avoid duplicated apply
+  - Wrapped Op struct to go through Raft module and maintain consistentency
+  - Fix bugs for misdirected output channel due to same opId between different servers
+  - No unuseful output channel deletion for non-leaders yet
+  - Pass all tests
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

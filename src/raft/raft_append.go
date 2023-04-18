@@ -200,6 +200,7 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 		case <-rpcBacthTimer.C:
 			//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Quit")
 			return false
+			//continue //retry indefinitely
 		case ok := <-ch:
 			if !ok {
 				//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> RPC_CALLER_AppendEntriesToPeer to Server[" + strconv.Itoa(peerIdx) + "] failed, Retry")
@@ -223,6 +224,8 @@ func (rf *Raft) StartHeartBeat() {
 	// rf.Lock()
 	// defer rf.Unlock()
 
+	//println("hb")
+
 	for ii := 0; ii < len(rf.peers); ii++ {
 		rf.Lock()
 		if rf.state != Leader {
@@ -230,7 +233,6 @@ func (rf *Raft) StartHeartBeat() {
 			return
 		}
 		rf.Unlock()
-
 		if ii != rf.me {
 			go func(i int) {
 				//try different nextIndex[i]
@@ -248,17 +250,18 @@ func (rf *Raft) StartHeartBeat() {
 						return
 					}
 					rf.Unlock()
-
 					//no need to lock (parallel)
 					//have internal check for state == Leader
 					ok := rf.RPC_CALLER_AppendEntriesToPeer(i, &args, &reply)
 					if !ok {
 						//issue: try indifinitely or give up if RPC(Caller) call fails?
 						//ans: give up. retry in next heartbeat AE
+						//println("Fail")
 						return
 						//retry to AE forever until success or not current leader anymore
 						//continue
 					}
+					//println("h4")
 
 					//rf.term, rf.state may be different after AE!
 

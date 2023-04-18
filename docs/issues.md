@@ -267,6 +267,50 @@
     这样其实会导致persist很频繁，如果持久化到磁盘会效率低，可能有优化方法？
 
 
+## Lab3
+### Lab3A
+
+- 问题1: 带有Raft模块的Server集群是如何工作的？
+
+    答案：Raft系统中，client的输入并不被直接处理，而是被转化为Op，即server作为状态机，状态转化的操作过程。Op作为log Entry先写入Leader中，Leader将其复制到大多数服务器的log后，提交该op。提交后可以触发apply，apply会传递ApplyMsg(包含Op信息)给server主模块，然后真正执行该Op、修改主模块数据、得到输出并返回给client。
+
+    非Leader也会随AE的接收而进行commit、触发apply。只不过非leader服务器的执行结果会被忽略(但对主模块数据有影响)。
+
+    Op是非常关键的中间元素，每个server递增地生成opId，serverId + opId是唯一的。每当生成一个op时，也会在该server上生成一个监听其apply完成的管道(outPutCh[opId])。leader在apply op后会向管道发送返回结果、删除管道，这个结果再被返回给client。注意此时必须检查该op是否来产生于服务器自身，否则会导致错乱bug。非leader在apply后不会发送结果、删除管道。所以管道可能需要定期清理。
+
+- 问题2: ApplyMsg中，CommandValid有什么用(可能设为false吗)？CommandIndex有什么用？
+
+    答案：snapshot中有用？
+
+- 问题3: 对系统的读操作(比如KV中的Get)是否也要写Raft Log、经过Raft模块进行响应？
+
+    答案：是？虽然读操作不修改数据内容，但也经过Raft模块可以保证操作的顺序性、一致性。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
