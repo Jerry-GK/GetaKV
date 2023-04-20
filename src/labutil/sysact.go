@@ -17,3 +17,7 @@ func PanicSystem() {
 func PrintMessage(msg string) {
 	fmt.Println("[Message]: " + msg)
 }
+
+func PrintDirect(msg string) {
+	fmt.Print(msg)
+}

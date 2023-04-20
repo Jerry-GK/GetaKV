@@ -178,9 +178,9 @@
 
 - 问题5: 什么时候去apply log？apply哪些log entries？
 
-    答案：首先，apply的log entries是index在[ lastApplied+1, commitIndex ]内的log entry，即已提交但未应用的部分。
+    答案：首先，apply的log entries是index在[ lastAppliedIndex+1, commitIndex ]内的log entry，即已提交但未应用的部分。
 
-    可以选择用applyTimer定时尝试StartApply，也可以在SetCommitIndex时发现commitIndex > lastApplied时触发StartApply函数。其中SetCommitIndex在Follower收到AE的捎带信息、Leader收到AE的reply信息时可能调用。
+    可以选择用applyTimer定时尝试StartApply，也可以在SetCommitIndex时发现commitIndex > lastAppliedIndex时触发StartApply函数。其中SetCommitIndex在Follower收到AE的捎带信息、Leader收到AE的reply信息时可能调用。
 
     两者各有优劣，定时法可以一次apply较多entry减少频繁apply。触发法可以让client响应较快。也可以两者结合用？
 
@@ -188,7 +188,7 @@
     
 - 问题6: Term、Index从0还是从1开始计？
 
-    答案：Term初始为0，第一任Leader的term肯定大于0。Log entry的index从1开始计。但并没有给log entries结构的0下标位设置空值，因为可能浪费空间。所以Log entry实际上下标从0开始计，因此GetLogEntryByIndex(index) == logEntries[index-1]。很多地方因此比较绕，需要特别注意。
+    答案：Term初始为0，第一任Leader的term肯定大于0。Log entry的index从1开始计。但并没有给log entries结构的0下标位设置空值，因为可能浪费空间。所以Log entry实际上下标从0开始计，因此getLogEntryByIndex(index) == logEntries[index-1]。很多地方因此比较绕，需要特别注意。
 
     程序中通过提供根据index或index范围获取Raft类的log entry的接口来避免错误，但对于AE中传入的args.Entries，下标问题需留意
 
@@ -206,14 +206,14 @@
     	for i := 0; i < len(args.Entries); i++ {
     		index = args.PrevLogIndex + 1 + i
     		//condition index > 0 is not necessary
-    		if index > 0 && rf.GetLastLogIndex() >= index && rf.GetLogEntryByIndex(index).Term != args.Entries[i].Term {
+    		if index > 0 && rf.getLastLogIndex() >= index && rf.getLogEntryByIndex(index).Term != args.Entries[i].Term {
     			//delete all entries after index (truncate)
-    			labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Truncate logEntries of index range [1, " + strconv.Itoa(index) + "), last commit index = " + strconv.Itoa(rf.commitIndex))
+    			labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Truncate logEntries of index range [1, " + fmt.Sprint(index) + "), last commit index = " + fmt.Sprint(rf.commitIndex))
     
     			//rf.logEntries = rf.logEntries[:index-1]
-    			rf.logEntries = rf.GetLogEntriesByIndexRange(1, index)
+    			rf.logEntries = rf.getLogEntriesByIndexRange(1, index)
     			break
-    		} else if index > 0 && rf.GetLastLogIndex() >= index && rf.GetLogEntryByIndex(index).Term == args.Entries[i].Term {
+    		} else if index > 0 && rf.getLastLogIndex() >= index && rf.getLogEntryByIndex(index).Term == args.Entries[i].Term {
     			max_i_InLog = i
     		}
     	}
@@ -278,7 +278,7 @@
 
 - 问题2: ApplyMsg中，CommandValid有什么用(可能设为false吗)？CommandIndex有什么用？
 
-    答案：snapshot中有用？
+    答案：lab3B的snapshot中有用，可以提醒落后的follower读来自serevr的snapshot、更新lastAppliedIndex。
 
 - 问题3: 对系统的读操作(比如KV中的Get)是否也要写Raft Log、经过Raft模块进行响应？
 
@@ -296,17 +296,17 @@
 
     - 麻烦2：logEntries的物理“数组”会被截断，但逻辑上需要假定有一份从头开始完整的日志、只不过不会访问lastIncluded前面的entry。也就是说逻辑index仍认为从0开始一直增长。这需要跟物理的下标进行转化、避免越界。
 
-    - 麻烦3：对于单个server来说，lastApplied之前的entry对自己已经没用，可以做snapshot。但如果它是leader，它的某个log entry只需要复制到大多数server上就可以commit、apply了，然后应该继续尝试复制到其它小部分server上。**但如果apply后做了snapthot，那么这些lastApplied之前的entry已经被删掉、无法再复制到剩下的小部分“落后”的server上。**
+    - 麻烦3：对于单个server来说，lastAppliedIndex之前的entry对自己已经没用，可以做snapshot。但如果它是leader，它的某个log entry只需要复制到大多数server上就可以commit、apply了，然后应该继续尝试复制到其它小部分server上。**但如果apply后做了snapthot，那么这些lastAppliedIndex之前的entry已经被删掉、无法再复制到剩下的小部分“落后”的server上。**
 
-        Raft论文的解决办法时：leader在这种情况下，需要给这些小部分serevr发送installSnapshot的RPC请求、强制同步snapshot状态，从而无需再发送lastApplied之前到entry。
+        Raft论文的解决办法时：leader在这种情况下，需要给这些小部分serevr发送installSnapshot的RPC请求、强制同步snapshot状态，从而无需再发送lastAppliedIndex之前到entry。
 
     - 麻烦4：如何控制leader进行installSnapshot的RPC请求的时机？有以下几种可能的选择
 
-        - 选择1：leader尝试AE时，如果发现需要发送的entries包括lastApplied之前的entry，那么直接对该follower发送installSnapshot、放弃本次AE。（我的做法）
+        - 选择1：leader尝试AE时，如果发现需要发送的entries包括lastAppliedIndex之前的entry，那么直接对该follower发送installSnapshot、放弃本次AE。（我的做法）
 
         - 选择2：leader进行AE，结果多次尝试发现都未成功，那么leader认为该follower落后自己太多，发送installSnapshot、放弃本次AE。(我认为效率较低，没有采用)
 
-        - 选择3：leader定时向所有follower发送installSnapshot(跟AE独立)。如果AE时发现需要发lastApplied之前的entry，那么直接放弃本次AE(或者说发空AE)。
+        - 选择3：leader定时向所有follower发送installSnapshot(跟AE独立)。如果AE时发现需要发lastAppliedIndex之前的entry，那么直接放弃本次AE(或者说发空AE)。
 
             这个选择在论文中被提到过，但被否决了，因为数据开销太大且大多数时候没必要 (Follower大多数时候是跟leader同步的，不需要接受leader的snapshot)
 
@@ -318,13 +318,17 @@
 
 - 问题2: 如何维护逻辑、物理两套index逻辑？
 
-    答案：
+    答案：从逻辑上讲，每个server只有一份完整的逻辑日志，这个日志term从1开始计数。本实验中没有在日志数组logEntries的0
+
+    位置设空值，所以term到下标的转换需要进行偏移。
+
+    另外，引入snapshot机制后，lastIncludedIndex前面(不包括自身)的物理entries可能被删掉，是不能访问的范围，所以还要加一重转换。另外还要注意lastIncludedIndex=0表示无snapshot时的corner case。转换中必须严格防止访问到正常范围外的物理entry。
 
 - 问题3: 当leader的某些log entry复制到大多数server并commit后，如果进行了snapshot、删掉这些entry后，它们还如何复制到剩下的其它server中？
 
     答案：它们不需要再复制。事实上snapshot时，如果对某个server[i]发送SN RPC成功，那么会修改对应leader的nextIndex[i]的值，使那些可能还没复制到其他serevr、但已被snapshot截断删去的那些log entries不用再被复制。
     
-- 问题4: , lastLogIndex, commitIndex, lastApplied, lastIncludedIndex是什么含义、有什么关系？
+- 问题4: , lastLogIndex, commitIndex, lastAppliedIndex, lastIncludedIndex是什么含义、有什么关系？
 
     - 含义
     
@@ -338,7 +342,7 @@
     
         - lastIncludedIndedx: 如果没有进行任何快照，那么此值为0(初始化值)。否则，1 -> lastIncludeIndedx-1是上一次快照完成后已被删除的entry的范围(访问这部分entry会越界，是lab过程的一大重要问题)，lastIncludeIndedx -> lastLogIndex是当前情况下有物理日志对应的index范围，这部分的entry才能被访问。
     
-            注意，虽然lastIncludedIndex没有被删，但是它对应的entry在快照中已经被apply，属于无用entry。Follower接收到IS时，如果commitIndex或lastAplliedIndex小于lastIncludedIndex，应该置成lastIncludedIndex，尽管该entry并可能没有物理对应。
+            注意，虽然lastIncludedIndex没有被删，但是它对应的entry在快照中已经被apply，属于无用entry。
     
     - 递增性：
     
@@ -354,15 +358,19 @@
     
         但是快照不仅可以来自于自身定时持久化，还可能来自leader的InstallSnapshot RPC，此时会传来强制同步的服务器snapshot数据和lastIncludedIndex，但并不会传来leader的logEntries，接收到IS的follower会删去args.lastIncludedIndex之前的entries（如果args.lastIncludeIndex比自身lastLogIndex要大，那么自身logEntries变为空）。
     
+        在实验实现中，发现这种情况下不能马上在接受IS RPC的时候就修改kv serever的表、更改commitIndex、lastAppliedIndex，因为接受IS的模块属于Raft模块。所以解决办法是允许暂时可能的commitIndex、lastAppliedIndex比lastIncludedIndex小，然后在applyLog的时候发现时，向kv server发送commandInvalid的ApllyMsg，让其readPersist、真正读取snapshot的信息更新kv表，然后再修改lastAppliedIndex和commitIndex (其实commitIndex也可以在其它地方修改)。
+    
+        所以这个不等式是普遍情况，但不保证系统中任何时候都成立，这里是否体现设计有问题？
+    
     - 持久性：
     
         这属性中，lastIncludedIndex, commitIndex需要持久化，lastAppliedIndex, lastLogIndex则不需要。
     
         注意lastLogIndex其实是实时根据logEntries得到的，logEntries是需要持久化的，所以其实也可以理解为lastLogIndex也是持久化的值。
     
-        唯一不需要持久化的值是lastAppliedIndex，因为这个值会在发送ApplyMsg检测到异常时回复给其需要更新的最新值。
+        唯一不需要持久化的值是lastAppliedIndex，因为这个值会在发送ApplyMsg检测到异常时回复给其需要更新的最新值。当系统重启时, lastAppliedIndex是0，发现其小于lastIncludedIndex后，会发送invalid的ApplyMsg、读持久化、对lastAppliedIndex进行更新。
     
-        当然，也可以对lastAppliedIndex持久化，但是不必要而已。
+        实际中发现如果持久化lastAppliedIndex将出错，原因暂未知。
 
 
 

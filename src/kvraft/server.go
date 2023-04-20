@@ -75,6 +75,12 @@ type KVServer struct {
 	lastApplyMsgId map[TypeClientId]ClerkMsgId //avoid duplicate apply
 }
 
+func (kv *KVServer) GetRf() *raft.Raft {
+	kv.lock()
+	defer kv.unlock()
+	return kv.rf
+}
+
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	// // issue: does read-only operation(like GET) need to go through Raft module?

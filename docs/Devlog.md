@@ -33,7 +33,6 @@
   - Increasing MsgId of client request to avoid duplicated apply
   - Wrapped Op struct to go through Raft module and maintain consistentency
   - Fix bugs for misdirected output channel due to same opId between different servers
-  - No unuseful output channel deletion for non-leaders yet
   - Pass all tests
   
 - **[23-4-20] Lab3B: KV Raft with Log Compaction**
@@ -46,9 +45,9 @@
   
   - Fix the bug for non-stop InstallSnapshot RPC if the server is killed
   
-  - Pass all tests, but bugs occurs sometimes (less than 5%)
+  - Pass all tests
   
-- [23-4-20] Add some C/S interactive KV operation interface(not available yet)
+- **[23-4-21]  Add single node KV and parser**
 
 
 

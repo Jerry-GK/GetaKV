@@ -1,25 +1,47 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
+	"os"
+
 	"../kvraft"
 	"../labrpc"
 	"../labutil"
+	"../parser"
+	"../raft"
 )
 
-type Command struct {
-	Op    string
-	Key   string
-	Value string
+type KVServive struct {
+	serverNum    int
+	maxraftstate int
+	ends         []*labrpc.ClientEnd
+
+	kvservers  []*kvraft.KVServer
+	persisters []*raft.Persister
 }
 
-func Parse(input string) Command {
-	//parse to be implemented
-	cmd := Command{
-		Op:    "GET",
-		Key:   "0",
-		Value: "",
+func (kvs *KVServive) Kill() {
+	for i := 0; i < kvs.serverNum; i++ {
+		kvs.kvservers[i].Kill()
 	}
-	return cmd
+}
+
+func StartKVService(serverNum int, maxraftstate int, ends []*labrpc.ClientEnd) *KVServive {
+	kvs := new(KVServive)
+	kvs.serverNum = serverNum
+	kvs.maxraftstate = maxraftstate
+	kvs.ends = ends
+
+	kvs.kvservers = make([]*kvraft.KVServer, serverNum)
+	kvs.persisters = make([]*raft.Persister, serverNum)
+
+	for i := 0; i < serverNum; i++ {
+		kvs.persisters[i] = raft.MakePersister()
+		kvs.kvservers[i] = kvraft.StartKVServer(kvs.ends, i, kvs.persisters[i], maxraftstate)
+	}
+
+	return kvs
 }
 
 func main() {
@@ -27,46 +49,74 @@ func main() {
 	serverNum := 5
 	maxraftstate := 1000
 
-	net := labrpc.MakeNetwork()
+	// net := labrpc.MakeNetwork()
 	endnames := make([]string, serverNum)
+	for j := 0; j < serverNum; j++ {
+		endnames[j] = fmt.Sprint("Server-", j)
+	}
+
+	net := labrpc.MakeNetwork()
+
 	ends := make([]*labrpc.ClientEnd, serverNum)
 
-	// for j := 0; j < serverNum; j++ {
-	// 	ends[j] = net.MakeEnd(cfg.endnames[i][j])
-	// 	cfg.net.Connect(endnames[i][j], j)
-	// }
+	for j := 0; j < serverNum; j++ {
+		ends[j] = net.MakeEnd(endnames[j])
+		net.Connect(endnames[j], j)
+		net.Enable(endnames[j], true)
+	}
 
-	KVServive := StartKVService(serverNum, maxraftstate, ends)
+	kvs := StartKVService(serverNum, maxraftstate, ends)
+
+	for i := 0; i < serverNum; i++ {
+		kvsvc := labrpc.MakeService(kvs.kvservers[i])
+		rfsvc := labrpc.MakeService(kvs.kvservers[i].GetRf())
+		srv := labrpc.MakeServer()
+		srv.AddService(kvsvc)
+		srv.AddService(rfsvc)
+		net.AddServer(i, srv)
+	}
+
+	labutil.PrintDirect("\n======GetaKV Start======")
 
 	//make single client
 	ck := kvraft.MakeClerk(ends)
-
+	reader := bufio.NewReader(os.Stdin)
 	quit := false
-
 	for !quit {
 		//input command
-		input := "GET 0"
-		cmd := Parse(input)
+		labutil.PrintDirect("\n\nGetaKV > ")
+		input := ""
+
+		line, _, _ := reader.ReadLine()
+		input = string(line)
+
+		cmd := parser.Parse(input)
 
 		switch cmd.Op {
 		case "PUT":
 			ck.Put(cmd.Key, cmd.Value)
-			labutil.PrintMessage("Put Success")
+			labutil.PrintDirect("Put Success")
 		case "APPEND":
 			ck.Append(cmd.Key, cmd.Value)
-			labutil.PrintMessage("Append Success")
+			labutil.PrintDirect("Append Success")
 		case "GET":
 			value := ck.Get(cmd.Key)
-			labutil.PrintMessage("Get Success, value = " + value)
+			if value == "" {
+				labutil.PrintDirect("Get Failed. Key Not Found")
+			} else {
+				labutil.PrintDirect("Get Success. Value = " + value)
+			}
 		case "QUIT":
 			quit = true
-			break
+		case "INVALID":
+			labutil.PrintDirect("Invalid Command!")
 		default:
-			labutil.PrintException("Unknown command type: " + cmd.Op)
+			labutil.PrintException("Unknown Command Type: " + cmd.Op)
 			labutil.PanicSystem()
 			return
 		}
 	}
 
-	labutil.PrintMessage("Client Quit")
+	labutil.PrintDirect("\n======GetaKV Quit======\n")
+	kvs.Kill()
 }
