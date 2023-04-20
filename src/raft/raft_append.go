@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -28,17 +29,24 @@ func (rf *Raft) GetAppendEntriesArgs(peerIdx int) AppendEntriesArgs {
 	lastLogIdx := rf.GetLastLogIndex()
 	//default empty log for heartbeat
 	prevLogIndex := lastLogIdx
+	//println("prevLogIndex = " + fmt.Sprint(prevLogIndex))
 	prevLogTerm := rf.GetLastLogTerm()
 	entries := make([]LogEntry, 0)
 
-	if nextIdx > lastLogIdx {
+	if nextIdx > lastLogIdx || nextIdx < rf.lastIncludedIndex {
 		//no log to send
 		//send empty entries
+		//println("Next ?")
+		prevLogIndex = lastLogIdx
+		prevLogTerm = rf.GetLastLogTerm()
 	} else {
 		//no-empty log to send
 		prevLogIndex = nextIdx - 1
-		if prevLogIndex <= 0 { //first log entry
+		//println("prevLogIndex(n) = " + fmt.Sprint(prevLogIndex))
+		if prevLogIndex == 0 && rf.lastIncludedIndex == 0 { //first log entry
 			prevLogTerm = InvalidTerm
+		} else if prevLogIndex < rf.lastIncludedIndex {
+			prevLogTerm = rf.lastIncludedTerm
 		} else {
 			prevLogTerm = rf.GetLogEntryByIndex(prevLogIndex).Term
 		}
@@ -99,9 +107,13 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 	}
 
 	//replicate log entries
+	if args.PrevLogIndex+1 < rf.lastIncludedIndex {
+		//return reply.Success = false
+		return
+	}
 	//2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
 	if rf.GetLastLogIndex() < args.PrevLogIndex ||
-		(args.PrevLogIndex != 0 && args.PrevLogTerm != InvalidTerm &&
+		((args.PrevLogIndex >= rf.lastIncludedIndex || (args.PrevLogIndex == 0 && rf.lastIncludedIndex == 0)) && args.PrevLogTerm != InvalidTerm &&
 			rf.GetLogEntryByIndex(args.PrevLogIndex).Term != args.PrevLogTerm) {
 		return
 	}
@@ -117,7 +129,11 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 			labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Truncate logEntries of index range [1, " + strconv.Itoa(index) + "), last commit index = " + strconv.Itoa(rf.commitIndex))
 
 			//rf.logEntries = rf.logEntries[:index-1]
-			rf.SetLogEntries(rf.GetLogEntriesByIndexRange(1, index))
+			start := 1
+			if rf.lastIncludedIndex > 0 {
+				start = rf.lastIncludedIndex
+			}
+			rf.SetLogEntries(rf.GetLogEntriesByIndexRange(start, index))
 			break
 		} else if index > 0 && rf.GetLastLogIndex() >= index && rf.GetLogEntryByIndex(index).Term == args.Entries[i].Term {
 			max_i_InLog = i
@@ -224,8 +240,6 @@ func (rf *Raft) StartHeartBeat() {
 	// rf.Lock()
 	// defer rf.Unlock()
 
-	//println("hb")
-
 	for ii := 0; ii < len(rf.peers); ii++ {
 		rf.Lock()
 		if rf.state != Leader {
@@ -240,16 +254,46 @@ func (rf *Raft) StartHeartBeat() {
 					rf.Lock()
 					//get args to append
 					//may have empty entry for heartbeat checking or non-empty entries for log replication
-					args := rf.GetAppendEntriesArgs(i)
-
-					reply := AppendEntriesReply{}
-
 					if rf.state != Leader {
-						//almost unreachable
 						rf.Unlock()
 						return
 					}
+
+					flag := rf.nextIndex[i] < rf.lastIncludedIndex
 					rf.Unlock()
+					if flag {
+						println("Server[" + fmt.Sprint(rf.me) + "]: " + "==========try SN==========")
+						println("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex has been outdated")
+						println("Server["+fmt.Sprint(rf.me)+"]: "+"nextindex = ", rf.nextIndex[i])
+						println("Server["+fmt.Sprint(rf.me)+"]: "+"lastIncludedIndex = ", rf.lastIncludedIndex)
+						go rf.SendInstallSnapshot(i)
+						return // give up AE this time
+					}
+
+					// 	//rf.Lock()
+					// 	flag = rf.nextIndex[i] < rf.lastIncludedIndex
+					// 	//rf.Unlock()
+					// 	if flag {
+					// 		return
+					// 		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex not updated")
+					// 		println("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex has been updated")
+					// 		println("Server["+fmt.Sprint(rf.me)+"]: "+"nextindex = ", rf.nextIndex[i])
+					// 		println("Server["+fmt.Sprint(rf.me)+"]: "+"lastIncludedIndex = ", rf.lastIncludedIndex)
+					// 		labutil.PanicSystem()
+					// 	} else {
+					// 		println("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex has been updated")
+					// 		println("Server["+fmt.Sprint(rf.me)+"]: "+"nextindex = ", rf.nextIndex[i])
+					// 		println("Server["+fmt.Sprint(rf.me)+"]: "+"lastIncludedIndex = ", rf.lastIncludedIndex)
+					// 	}
+
+					// 	println("Server[" + fmt.Sprint(rf.me) + "]: " + "==========end SN==========")
+					// }
+
+					rf.Lock()
+					args := rf.GetAppendEntriesArgs(i)
+					reply := AppendEntriesReply{}
+					rf.Unlock()
+
 					//no need to lock (parallel)
 					//have internal check for state == Leader
 					ok := rf.RPC_CALLER_AppendEntriesToPeer(i, &args, &reply)
@@ -296,6 +340,7 @@ func (rf *Raft) StartHeartBeat() {
 							//every try fails
 							//issue: is that normal?
 							labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try AE for every nextIndex all failed!")
+							//issue: need to send snapshot?
 							return
 						}
 

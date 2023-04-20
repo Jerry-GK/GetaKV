@@ -617,6 +617,7 @@ func TestPersistPartitionUnreliableLinearizable3A(t *testing.T) {
 // even if minority doesn't respond.
 //
 func TestSnapshotRPC3B(t *testing.T) {
+	//return
 	const nservers = 3
 	maxraftstate := 1000
 	cfg := make_config(t, nservers, false, maxraftstate)
@@ -674,6 +675,7 @@ func TestSnapshotRPC3B(t *testing.T) {
 // are the snapshots not too huge? 500 bytes is a generous bound for the
 // operations we're doing here.
 func TestSnapshotSize3B(t *testing.T) {
+	//return
 	const nservers = 3
 	maxraftstate := 1000
 	maxsnapshotstate := 500

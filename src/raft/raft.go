@@ -19,6 +19,7 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -121,17 +122,18 @@ type Raft struct {
 	state State // 0: follower, 1: candidate, 2: leader
 
 	// persistent states begin
-	term       int
-	voteFor    int // -1 if not voted yet
-	logEntries []LogEntry
+	term              int
+	voteFor           int // -1 if not voted yet
+	logEntries        []LogEntry
+	commitIndex       int //index of highest log entry known to be committed, initialized to 0, increase monotonically
+	lastIncludedIndex int
+	lastIncludedTerm  int
 	// persistent states end
 
 	electionTimer  *time.Timer
 	heartBeatTimer *time.Timer
 	applyTimer     *time.Timer
 
-	// for log replication
-	commitIndex int //index of highest log entry known to be committed, initialized to 0, increase monotonically
 	lastApplied int //index of highest log entry applied to state machine, initialized to 0, increase monotonically
 
 	// Leader only. For each server, index of the next log entry to send to that server
@@ -167,6 +169,7 @@ func (rf *Raft) GetState() (int, bool) {
 //
 //must have outer lock!
 func (rf *Raft) persist() {
+	//println("persist!")
 	// Your code here (2C).
 	data := rf.GetPersistData()
 	rf.persister.SaveRaftState(data)
@@ -186,22 +189,50 @@ func (rf *Raft) readPersist(data []byte) {
 	var term int
 	var voteFor int
 	var logEntries []LogEntry
+	var commitIndex int
+	var lastIncludedIndex int
+	var lastIncludedTerm int
+
 	if d.Decode(&term) != nil ||
 		d.Decode(&voteFor) != nil ||
-		d.Decode(&logEntries) != nil {
+		d.Decode(&logEntries) != nil ||
+		d.Decode(&commitIndex) != nil ||
+		d.Decode(&lastIncludedIndex) != nil ||
+		d.Decode(&lastIncludedTerm) != nil {
 		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: readPersist failed while decoding!")
 		labutil.PanicSystem()
 	} else {
 		rf.term = term
 		rf.voteFor = voteFor
 		rf.logEntries = logEntries
+		rf.commitIndex = commitIndex
+		rf.lastIncludedIndex = lastIncludedIndex
+		rf.lastIncludedTerm = lastIncludedTerm
 	}
 }
 
-func (rf *Raft) SavePersistAndSnapshot(state []byte, snapshot []byte) {
+//this function may be called directly by the server
+func (rf *Raft) SavePersistAndSnapshot(index int, snapshot []byte) {
 	rf.Lock()
 	defer rf.Unlock()
-	rf.persister.SaveStateAndSnapshot(state, snapshot)
+
+	if index <= rf.lastIncludedIndex {
+		return
+	}
+
+	if index > rf.commitIndex {
+		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SavePersistAndSnapshot failed, index > rf.commitIndex!")
+		labutil.PanicSystem()
+		return
+	}
+
+	// delete all log entries before lastIncludedIndex
+	//println("Trunc, lastIncludedIndex: ", rf.lastIncludedIndex)
+	rf.SetLogEntries(rf.GetLogEntriesByIndexRange(index, 0))
+	rf.SetLastIncludedIndex(index)
+	rf.SetLastIncludedTerm(rf.GetLogEntryByIndex(index).Term)
+
+	rf.persister.SaveStateAndSnapshot(rf.GetPersistData(), snapshot)
 }
 
 //
@@ -327,6 +358,18 @@ func (rf *Raft) SetLogEntries(logEntries []LogEntry) {
 }
 
 //must have outer lock!
+func (rf *Raft) SetLastIncludedIndex(index int) {
+	rf.lastIncludedIndex = index
+	rf.persist()
+}
+
+//must have outer lock!
+func (rf *Raft) SetLastIncludedTerm(term int) {
+	rf.lastIncludedTerm = term
+	rf.persist()
+}
+
+//must have outer lock!
 func (rf *Raft) SetCommitIndex(index int) {
 	//println("Set Commit Index = " + strconv.Itoa(index))
 	if index < rf.commitIndex {
@@ -338,14 +381,13 @@ func (rf *Raft) SetCommitIndex(index int) {
 		labutil.PanicSystem()
 	}
 
-	labutil.PrintDebug("When set commitIndex, len(logEntries) = " + strconv.Itoa(len(rf.logEntries)))
-
 	rf.commitIndex = index
 
 	if rf.commitIndex > rf.lastApplied {
 		//trigger apply log
 		rf.HitApplyTimer()
 	}
+	rf.persist()
 }
 
 //important function, the only way for server to change state or term
@@ -404,7 +446,11 @@ func (rf *Raft) ChangeState(state State, term int) {
 //must have outer lock!
 func (rf *Raft) GetLastLogIndex() int {
 	//index starts from 1
-	return len(rf.logEntries)
+	if rf.lastIncludedIndex == 0 {
+		return len(rf.logEntries)
+	} else {
+		return len(rf.logEntries) + rf.lastIncludedIndex - 1
+	}
 }
 
 //must have outer lock!
@@ -417,24 +463,41 @@ func (rf *Raft) GetLastLogTerm() int {
 
 //must have outer lock!
 func (rf *Raft) GetLogEntryByIndex(index int) LogEntry {
-	//idx := index - rf.lastsnapshotindex
-	if index-1 >= len(rf.logEntries) {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: len = " + strconv.Itoa(len(rf.logEntries)) + " index = " + strconv.Itoa(index) + " ,GetLogEntryByIndex: index out of range!")
+	physicalIndex := index
+	if rf.lastIncludedIndex != 0 {
+		physicalIndex = index - rf.lastIncludedIndex + 1
+	}
+	// println("index = " + strconv.Itoa(index))
+	// println("rf.lastIncludedIndex = " + strconv.Itoa(rf.lastIncludedIndex))
+	if physicalIndex-1 >= len(rf.logEntries) {
+		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: len = " + strconv.Itoa(len(rf.logEntries)) + " physicalIndex = " + strconv.Itoa(physicalIndex) + " ,GetLogEntryByIndex: physicalIndex out of range!")
 		labutil.PanicSystem()
 	}
-	return rf.logEntries[index-1]
+	return rf.logEntries[physicalIndex-1]
 }
 
-//return log entries of index left -> right-1 (lofEntries[left-1:right-1])
+//return log entries of index left -> right-1 (logEntries[left-1:right-1])
 //GetLogEntriesByIndexRange(left, 0) = logEntries[left-1:]
 //must have outer lock!
 func (rf *Raft) GetLogEntriesByIndexRange(left int, right int) []LogEntry {
-	if left > right && right != 0 {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: left > right!")
+	physicalLeft := left
+	if rf.lastIncludedIndex != 0 {
+		physicalLeft = left - rf.lastIncludedIndex + 1
+	}
+	physicalRight := right
+	if rf.lastIncludedIndex != 0 {
+		physicalRight = right - rf.lastIncludedIndex + 1
+	}
+	// println("left = " + strconv.Itoa(left))
+	// println("right = " + strconv.Itoa(right))
+	// println("rf.lastIncludedIndex = " + strconv.Itoa(rf.lastIncludedIndex))
+
+	if physicalLeft > physicalRight && right != 0 {
+		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: physicalLeft > physicalRight!")
 		labutil.PanicSystem()
 	}
-	if left < 1 {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: left < 1!")
+	if physicalLeft < 1 {
+		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: physicalLeft < 1!")
 		labutil.PanicSystem()
 	}
 	if right > rf.GetLastLogIndex() {
@@ -442,9 +505,12 @@ func (rf *Raft) GetLogEntriesByIndexRange(left int, right int) []LogEntry {
 		labutil.PanicSystem()
 	}
 	if right == 0 {
-		right = rf.GetLastLogIndex() + 1
+		physicalRight = rf.GetLastLogIndex() + 1
+		if rf.lastIncludedIndex != 0 {
+			physicalRight = rf.GetLastLogIndex() + 1 - rf.lastIncludedIndex + 1
+		}
 	}
-	return rf.logEntries[left-1 : right-1]
+	return rf.logEntries[physicalLeft-1 : physicalRight-1]
 }
 
 //must have outer lock!
@@ -454,6 +520,9 @@ func (rf *Raft) GetPersistData() []byte {
 	e.Encode(rf.term)
 	e.Encode(rf.voteFor)
 	e.Encode(rf.logEntries)
+	e.Encode(rf.commitIndex)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	data := w.Bytes()
 	return data
 }
@@ -469,21 +538,32 @@ func (rf *Raft) Unlock() {
 }
 
 func (rf *Raft) StartApplyLog() {
+	//	println("ApplyLog")
 	rf.Lock()
 
 	var msgs []ApplyMsg
-	msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
-
-	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+	if rf.lastApplied < rf.lastIncludedIndex { //this condition is critical
+		msgs = make([]ApplyMsg, 0, 1)
 		msgs = append(msgs, ApplyMsg{
-			CommandValid: true,
-			Command:      rf.GetLogEntryByIndex(i).Command,
-			CommandIndex: i,
+			CommandValid: false,
+			Command:      nil,
+			CommandIndex: rf.lastIncludedIndex,
 		})
-	}
-
-	if len(msgs) != 0 {
-		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Start apply non-empry log entries")
+		println("Server[" + fmt.Sprint(rf.me) + "]: Invalid, lastApplied = " + fmt.Sprint(rf.lastApplied) + " lastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
+	} else if rf.commitIndex <= rf.lastApplied {
+		//println("Server[" + strconv.Itoa(rf.me) + "]: commitIndex <= lastApplied")
+		msgs = make([]ApplyMsg, 0)
+	} else {
+		msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
+		println("Server[" + fmt.Sprint(rf.me) + "] LastApplied = " + fmt.Sprint(rf.lastApplied))
+		println("Server[" + fmt.Sprint(rf.me) + "] LastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
+		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+			msgs = append(msgs, ApplyMsg{
+				CommandValid: true,
+				Command:      rf.GetLogEntryByIndex(i).Command,
+				CommandIndex: i,
+			})
+		}
 	}
 
 	rf.Unlock()
@@ -493,7 +573,7 @@ func (rf *Raft) StartApplyLog() {
 		//println("Try to apply msg")
 		rf.applyCh <- msg
 		rf.Lock()
-		rf.lastApplied = msg.CommandIndex
+		rf.lastApplied = msg.CommandIndex //lastApplied is updated here, even for invalid applyMsg
 		rf.Unlock()
 		//println("Applied msg")
 	}
@@ -540,6 +620,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+
+	rf.lastIncludedIndex = 0          //issue: 0 or 1?, 0 means no snapshot yet
+	rf.lastIncludedTerm = InvalidTerm //issue: 0 or -1?
 
 	rf.readPersist(persister.ReadRaftState())
 

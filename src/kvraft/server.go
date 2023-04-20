@@ -71,7 +71,7 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	nextOpId        TypeOpId
+	nextOpId       TypeOpId
 	kvData         map[string]string
 	lastApplyMsgId map[TypeClientId]ClerkMsgId //avoid duplicate apply
 
@@ -104,7 +104,8 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	kv.nextOpId = kv.GetNextOpId()
-	kv.SaveSnapshot()
+	//issue: how to snapshot nextOpId?
+	//kv.SaveSnapshot()
 	op := Op{
 		Method:   GET,
 		Key:      args.Key,
@@ -133,7 +134,7 @@ func (kv *KVServer) UnLock() {
 
 //must have outer lock!
 func (kv *KVServer) GetNextOpId() TypeOpId {
-	return  TypeOpId(nrand())
+	return TypeOpId(nrand())
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -241,8 +242,11 @@ func (kv *KVServer) WaitApply() {
 			return
 		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
-				labutil.PrintException("Invalid Command!")
-				labutil.PanicSystem()
+				println("Invalid msg!")
+				kv.Lock()
+				kv.ReadSnapshot(kv.persister.ReadSnapshot())
+				kv.UnLock()
+				continue
 			}
 
 			op := msg.Command.(Op)
@@ -304,7 +308,7 @@ func (kv *KVServer) WaitApply() {
 			}
 
 			kv.Lock()
-			kv.SaveSnapshot()
+			kv.SaveSnapshot(msg.CommandIndex)
 			ch, ok := kv.outPutCh[op.OpId]
 			if ok && op.ServerId == kv.me {
 				//println("serverID = " + fmt.Sprint(kv.me) + ", ch <- ExeResult, Value = " + op.Value + ", Method = " + fmt.Sprint(op.Method) + ", msgId = " + fmt.Sprint(op.MsgId) + ", opId = " + fmt.Sprint(op.OpId) + ", clientId = " + fmt.Sprint(op.ClientId))
@@ -316,11 +320,16 @@ func (kv *KVServer) WaitApply() {
 }
 
 //must have outer lock!
-func (kv *KVServer) SaveSnapshot() {
-	//rfData := kv.rf.GetPersistData()
-	//kvData := kv.GetSnapshotData()
-	//rfData = append(rfData, kvData...)
-	//kv.rf.SavePersistAndSnapshot(rfData, kvData)
+func (kv *KVServer) SaveSnapshot(index int) {
+	//save snapshot only when raftstate size exceeds
+	//Start(cmd) -> apply -> raftstate size grows -> (if exceeds) save snapshot
+	//println("maxraftstate = " + fmt.Sprint(kv.maxraftstate))
+	//println("RaftStateSize = " + fmt.Sprint(kv.persister.RaftStateSize()))
+	if kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
+		kvData := kv.GetSnapshotData()
+		println("Server[" + fmt.Sprint(kv.me) + "]: Saving snapshot, index = " + fmt.Sprint(index))
+		kv.rf.SavePersistAndSnapshot(index, kvData)
+	}
 }
 
 //must have outer lock!
@@ -394,9 +403,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	//kv.ReadSnapshot(persister.ReadSnapshot())
-
-	kv.SaveSnapshot()
+	kv.ReadSnapshot(persister.ReadSnapshot())
 
 	go kv.WaitApply()
 

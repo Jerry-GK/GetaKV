@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"crypto/rand"
+	"fmt"
 	//"fmt"
 	"math/big"
 
@@ -19,8 +20,8 @@ const (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	leaderId int
-	clientId TypeClientId
+	leaderId  int
+	clientId  TypeClientId
 	nextMsgId ClerkMsgId
 }
 
@@ -69,7 +70,7 @@ func (ck *Clerk) Get(key string) string {
 	args := GetArgs{key, ck.clientId, ck.nextMsgId}
 	//args.msgId is the same for multiple RPC retries
 
-	//labutil.PrintMessage("Clerk[" + fmt.Sprint(ck.clientId) + "] Get" + " <" + key + ">" + ", msgId = " + fmt.Sprint(ck.nextMsgId))
+	labutil.PrintMessage("Clerk[" + fmt.Sprint(ck.clientId) + "] Get" + " <" + key + ">" + ", msgId = " + fmt.Sprint(ck.nextMsgId))
 
 	for {
 		reply := GetReply{}
@@ -122,7 +123,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId}
 	//args.msgId is the same for multiple RPC retries
 
-	//labutil.PrintMessage("Clerk[" + fmt.Sprint(ck.clientId) + "] " + op + " <" + key + ", " + value + ">" + ", msgId = " + fmt.Sprint(ck.nextMsgId))
+	labutil.PrintMessage("Clerk[" + fmt.Sprint(ck.clientId) + "] " + op + " <" + key + ", " + value + ">" + ", msgId = " + fmt.Sprint(ck.nextMsgId))
 
 	for {
 		reply := PutAppendReply{}

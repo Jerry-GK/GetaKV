@@ -288,11 +288,43 @@
 
 
 
+### Lab3B
 
+- 问题1: Snapshot机制大致是怎样的？会引出什么麻烦？
 
+    答案：为了避免serevr中raft模块内的log一直增长、太大，需要记录系统状态的快照snapshot，并可以删去快照前已经apply了的log entries。
 
+    - 麻烦1：系统状态snapshot的持久化需要跟raft模块的persister绑定在一起，不能独立持久化。两者耦合性增强。
 
+    - 麻烦2：logEntries的物理“数组”会被截断，但逻辑上需要假定有一份从头开始完整的日志、只不过不会访问lastIncluded前面的entry。也就是说逻辑index仍认为从0开始一直增长。这需要跟物理的下标进行转化、避免越界。
 
+    - 麻烦3：对于单个server来说，lastApplied之前的entry对自己已经没用，可以做snapshot。但如果它是leader，它的某个log entry只需要复制到大多数server上就可以commit、apply了，然后应该继续尝试复制到其它小部分server上。**但如果apply后做了snapthot，那么这些lastApplied之前的entry已经被删掉、无法再复制到剩下的小部分“落后”的server上。**
+
+        Raft论文的解决办法时：leader在这种情况下，需要给这些小部分serevr发送installSnapshot的RPC请求、强制同步snapshot状态，从而无需再发送lastApplied之前到entry。
+
+    - 麻烦4：如何控制leader进行installSnapshot的RPC请求的时机？有以下几种可能的选择
+
+        - 选择1：leader尝试AE时，如果发现需要发送的entries包括lastApplied之前的entry，那么直接对该follower发送installSnapshot、放弃本次AE。（我的做法）
+
+        - 选择2：leader进行AE，结果多次尝试发现都未成功，那么leader认为该follower落后自己太多，发送installSnapshot、放弃本次AE。(我认为效率较低，没有采用)
+
+        - 选择3：leader定时向所有follower发送installSnapshot(跟AE独立)。如果AE时发现需要发lastApplied之前的entry，那么直接放弃本次AE(或者说发空AE)。
+
+            这个选择在论文中被提到过，但被否决了，因为数据开销太大且大多数时候没必要 (Follower大多数时候是跟leader同步的，不需要接受leader的snapshot)
+
+    - 麻烦5：**不同server之间做snapshot(状态持久化)是独立的(无需询问leader意见)**，时机见’麻烦6‘。但是还可能接受来自leader的installSnapshot的RPC请求，这也是做snapshot的一个触发条件且数据来自外部。需要在两者生成一套进行选择、控制的机制。
+
+    - 麻烦6：server状态，比如K/V系统的kv表，如果每次更新都马上持久化、做snapshot实在开销太大。应该控制持久化snapshot的时机和方法、减少I/O开销。也就是说，apply entry之后可以选择马上持久化，也可以一次持久化多个applied entries，比如发现log太大时才去做持久化（合理策略）；
+
+        
+
+- 问题2: 如何维护逻辑、物理两套index逻辑？
+
+    答案：
+
+- 问题3: 当leader的某些log entry复制到大多数server并commit后，如果进行了snapshot、删掉这些entry后，它们还如何复制到剩下的其它server中？
+
+    答案：它们不需要再复制。事实上snapshot时，如果对某个server[i]发送SN RPC成功，那么会修改对应leader的nextIndex[i]的值，使那些可能还没复制到其他serevr、但已被snapshot截断删去的那些log entries不用再被复制。
 
 
 
