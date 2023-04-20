@@ -1,7 +1,7 @@
 #!/bin/bash
 # This is a script for batch testing
 
-testCommand="go test -run 3A"
+testCommand="go test -run 3B"
 outputFile="out"
 iterNum=300
 

@@ -1,20 +1,24 @@
 package kvraft
 
-import "../labrpc"
-import "testing"
-import "os"
+import (
+	"os"
+	"testing"
 
-// import "log"
-import crand "crypto/rand"
-import "math/big"
-import "math/rand"
-import "encoding/base64"
-import "sync"
-import "runtime"
-import "../raft"
-import "fmt"
-import "time"
-import "sync/atomic"
+	"../labrpc"
+
+	// import "log"
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"math/big"
+	"math/rand"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"../raft"
+)
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -420,6 +424,6 @@ func (cfg *config) end() {
 		ops := atomic.LoadInt32(&cfg.ops)  //  number of clerk get/put/append calls
 
 		fmt.Printf("  ... Passed --")
-		fmt.Printf("  %4.1f  %d %5d %4d\n", t, npeers, nrpc, ops)
+		fmt.Printf(" < t=%.1fs, npeers=%d, nrpc=%d, ops=%d >\n", t, npeers, nrpc, ops)
 	}
 }

@@ -670,6 +670,8 @@ func TestSnapshotRPC3B(t *testing.T) {
 	check(cfg, t, ck, "1", "1")
 
 	cfg.end()
+
+	//time.Sleep(10 * time.Second)
 }
 
 // are the snapshots not too huge? 500 bytes is a generous bound for the

@@ -242,7 +242,7 @@ func (kv *KVServer) WaitApply() {
 			return
 		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
-				println("Invalid msg!")
+				//println("Invalid msg!")
 				kv.Lock()
 				kv.ReadSnapshot(kv.persister.ReadSnapshot())
 				kv.UnLock()
@@ -327,7 +327,7 @@ func (kv *KVServer) SaveSnapshot(index int) {
 	//println("RaftStateSize = " + fmt.Sprint(kv.persister.RaftStateSize()))
 	if kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
 		kvData := kv.GetSnapshotData()
-		println("Server[" + fmt.Sprint(kv.me) + "]: Saving snapshot, index = " + fmt.Sprint(index))
+		//println("Server[" + fmt.Sprint(kv.me) + "]: Saving snapshot, index = " + fmt.Sprint(index))
 		kv.rf.SavePersistAndSnapshot(index, kvData)
 	}
 }
