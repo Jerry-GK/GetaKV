@@ -19,8 +19,8 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,14 +29,6 @@ import (
 	"../labrpc"
 	"../labutil"
 )
-
-// import "bytes"
-// import "../labgob"
-
-// var RPC_AE_TotalCallNum = 0
-// var RPC_RV_TotalCallNum = 0
-// var RPC_ConcurrentCallNum = 0
-// var HeartBeatNum = 0
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -133,7 +125,7 @@ type Raft struct {
 	heartBeatTimer *time.Timer
 	applyTimer     *time.Timer
 
-	lastApplied int //index of highest log entry applied to state machine, initialized to 0, increase monotonically
+	lastAppliedIndex int //index of highest log entry applied to state machine, initialized to 0, increase monotonically
 
 	// Leader only. For each server, index of the next log entry to send to that server
 	// Initialized to leader last log index + 1 after election success
@@ -150,8 +142,8 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	rf.Lock()
-	defer rf.Unlock()
+	rf.lock()
+	defer rf.unlock()
 	var term int
 	var isleader bool
 	// Your code here (2A).
@@ -168,10 +160,24 @@ func (rf *Raft) GetState() (int, bool) {
 //
 //must have outer lock!
 func (rf *Raft) persist() {
-	//println("persist!")
 	// Your code here (2C).
-	data := rf.GetPersistData()
+	data := rf.getPersistData()
 	rf.persister.SaveRaftState(data)
+}
+
+//must have outer lock!
+func (rf *Raft) getPersistData() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.term)
+	e.Encode(rf.voteFor)
+	e.Encode(rf.logEntries)
+	e.Encode(rf.commitIndex)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
+	e.Encode(rf.lastAppliedIndex)
+	data := w.Bytes()
+	return data
 }
 
 //
@@ -191,7 +197,7 @@ func (rf *Raft) readPersist(data []byte) {
 	var commitIndex int
 	var lastIncludedIndex int
 	var lastIncludedTerm int
-	var lastApplied int
+	var lastAppliedIndex int
 
 	if d.Decode(&term) != nil ||
 		d.Decode(&voteFor) != nil ||
@@ -199,8 +205,8 @@ func (rf *Raft) readPersist(data []byte) {
 		d.Decode(&commitIndex) != nil ||
 		d.Decode(&lastIncludedIndex) != nil ||
 		d.Decode(&lastIncludedTerm) != nil ||
-		d.Decode(&lastApplied) != nil {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: readPersist failed while decoding!")
+		d.Decode(&lastAppliedIndex) != nil {
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: readPersist failed while decoding!")
 		labutil.PanicSystem()
 	} else {
 		rf.term = term
@@ -209,32 +215,33 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.commitIndex = commitIndex
 		rf.lastIncludedIndex = lastIncludedIndex
 		rf.lastIncludedTerm = lastIncludedTerm
-		//rf.lastApplied = lastApplied //issue: is lastApplied need to be persisted?
+		//rf.lastAppliedIndex = lastAppliedIndex //issue: is lastAppliedIndex need to be persisted?
 	}
 }
 
 //this function may be called directly by the server
 func (rf *Raft) SavePersistAndSnapshot(index int, snapshot []byte) {
-	rf.Lock()
-	defer rf.Unlock()
+	rf.lock()
+	defer rf.unlock()
 
 	if index <= rf.lastIncludedIndex {
 		return
 	}
 
 	if index > rf.commitIndex {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SavePersistAndSnapshot failed, index > rf.commitIndex!")
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: SavePersistAndSnapshot failed, index > rf.commitIndex!")
 		labutil.PanicSystem()
 		return
 	}
 
 	// delete all log entries before lastIncludedIndex
-	//println("Trunc, lastIncludedIndex: ", rf.lastIncludedIndex)
-	rf.SetLogEntries(rf.GetLogEntriesByIndexRange(index, 0))
-	rf.SetLastIncludedIndex(index)
-	rf.SetLastIncludedTerm(rf.GetLogEntryByIndex(index).Term)
+	if index > 0 {
+		rf.setLogEntries(rf.getLogEntriesByIndexRange(index, 0))
+		rf.setLastIncludedIndex(index)
+		rf.setLastIncludedTerm(rf.getLogEntryByIndex(index).Term)
+	}
 
-	rf.persister.SaveStateAndSnapshot(rf.GetPersistData(), snapshot)
+	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), snapshot)
 }
 
 //
@@ -252,10 +259,9 @@ func (rf *Raft) SavePersistAndSnapshot(index int, snapshot []byte) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	rf.Lock()
-	defer rf.Unlock()
-	//println("Start Command")
-	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Receive Start Command")
+	rf.lock()
+	defer rf.unlock()
+	labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Receive Start Command")
 
 	index := -1
 	term := rf.term
@@ -264,7 +270,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	isLeader = rf.state == Leader
 	if isLeader {
-		index = rf.GetLastLogIndex() + 1
+		index = rf.getLastLogIndex() + 1
 		term = rf.term
 		//add new log entry
 		newLogEntry := LogEntry{
@@ -272,10 +278,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			Command: command,
 		}
 		//rf.logEntries = append(rf.logEntries, newLogEntry)
-		rf.AppendLogEntries(newLogEntry)
+		rf.appendLogEntries(newLogEntry)
 		rf.matchIndex[rf.me] = index
 
-		rf.HitHeartBeatTimer()
+		rf.hitHeartBeatTimer()
 	}
 	return index, term, isLeader
 }
@@ -302,16 +308,16 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ResetElectionTimer() {
-	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " reset election timer")
+func (rf *Raft) resetElectionTimer() {
+	//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: " + StateToString(rf.state) + " reset election timer")
 	rf.electionTimer.Stop()
 	// add random time to avoid all boom at the same time
 	r := time.Duration(rand.Int63())%(ElectionTimeoutMax-ElectionTimeoutMin) + ElectionTimeoutMin
 	rf.electionTimer.Reset(r)
 }
 
-func (rf *Raft) ResetHeartBeatTimer() {
-	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " reset heartbeat timer")
+func (rf *Raft) resetHeartBeatTimer() {
+	//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: " + StateToString(rf.state) + " reset heartbeat timer")
 	rf.heartBeatTimer.Stop()
 	// add random time to avoid all boom at the same time
 	//r := time.Duration(rand.Int63()) % HeartBeatTimeout
@@ -320,103 +326,103 @@ func (rf *Raft) ResetHeartBeatTimer() {
 	rf.heartBeatTimer.Reset(HeartBeatTimeout)
 }
 
-func (rf *Raft) HitHeartBeatTimer() {
-	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: " + StateToString(rf.state) + " clear heartbeat timer")
+func (rf *Raft) hitHeartBeatTimer() {
+	//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: " + StateToString(rf.state) + " clear heartbeat timer")
 	rf.heartBeatTimer.Stop()
 	//almost elapsed immediately
 	rf.heartBeatTimer.Reset(HitTinyInterval)
-	//or rf.heartBeatTimer.Reset(0)? maybe dangerous
+	//or rf.heartBeatTimer.Reset(0)? maybe dangerous!
 }
 
-func (rf *Raft) ResetApplyTimer() {
+func (rf *Raft) resetApplyTimer() {
 	rf.applyTimer.Stop()
 	rf.applyTimer.Reset(ApplyTimeout)
 }
 
-func (rf *Raft) HitApplyTimer() {
+func (rf *Raft) hitApplyTimer() {
 	rf.applyTimer.Stop()
 	rf.applyTimer.Reset(HitTinyInterval)
-	//or rf.applyTimer.Reset(0)? maybe dangerous
+	//or rf.applyTimer.Reset(0)? maybe dangerous!
 }
 
 //must have outer lock!
-func (rf *Raft) SetVoteFor(voteFor int) {
+func (rf *Raft) setVoteFor(voteFor int) {
 	rf.voteFor = voteFor
-	if voteFor != InvalidVoteFor { //avoid redundant persist with ChangeState
+	if voteFor != InvalidVoteFor { //avoid redundant persist with changeState
 		rf.persist()
 	}
 }
 
 //must have outer lock!
-func (rf *Raft) AppendLogEntries(logEntries ...LogEntry) {
+func (rf *Raft) appendLogEntries(logEntries ...LogEntry) {
 	rf.logEntries = append(rf.logEntries, logEntries...)
 	rf.persist()
 }
 
 //must have outer lock!
-func (rf *Raft) SetLogEntries(logEntries []LogEntry) {
+func (rf *Raft) setLogEntries(logEntries []LogEntry) {
 	rf.logEntries = logEntries
 	rf.persist()
 }
 
 //must have outer lock!
-func (rf *Raft) SetLastIncludedIndex(index int) {
+func (rf *Raft) setLastIncludedIndex(index int) {
 	rf.lastIncludedIndex = index
 	rf.persist()
 }
 
 //must have outer lock!
-func (rf *Raft) SetLastIncludedTerm(term int) {
+func (rf *Raft) setLastIncludedTerm(term int) {
 	rf.lastIncludedTerm = term
 	rf.persist()
 }
 
 //must have outer lock!
-func (rf *Raft) SetCommitIndex(index int) {
-	//println("Set Commit Index = " + strconv.Itoa(index))
+func (rf *Raft) setCommitIndex(index int) {
 	if index < rf.commitIndex {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot decrease!")
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: setCommitIndex: commitIndex cannot decrease!")
 		labutil.PanicSystem()
 	}
-	// if index > rf.GetLastLogIndex() {
-	// 	labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot exceed the last log index!")
+
+	// if index > rf.getLastLogIndex() {
+	// 	labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: setCommitIndex: commitIndex cannot exceed the last log index!")
 	// 	labutil.PanicSystem()
 	// }
 
 	rf.commitIndex = index
 
-	if rf.commitIndex > rf.lastApplied {
+	if rf.commitIndex > rf.lastAppliedIndex {
 		//trigger apply log
-		rf.HitApplyTimer()
+		rf.hitApplyTimer()
 	}
 	rf.persist()
 }
 
-func (rf *Raft) SetLastApplied(lastApplied int) {
-	rf.lastApplied = lastApplied
-	rf.persist()
+func (rf *Raft) setLastApplied(lastAppliedIndex int) {
+	rf.lastAppliedIndex = lastAppliedIndex
+	//rf.persist()
 }
 
 //important function, the only way for server to change state or term
 //change the state of the server, update the term
 //must have outer lock!
-func (rf *Raft) ChangeState(state State, term int) {
+func (rf *Raft) changeState(state State, term int) {
 	// enable change to the same state / same term
 
 	if state != rf.state {
-		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: ChangeState: " + StateToString(rf.state) + " -> " + StateToString(state) + ", term: " + strconv.Itoa(rf.term) + " -> " + strconv.Itoa(term))
+		labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: changeState: " + StateToString(rf.state) + " -> " + StateToString(state) + ", term: " + fmt.Sprint(rf.term) + " -> " + fmt.Sprint(term))
 	}
 
 	rf.state = state
 
 	if term < rf.term {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: Try to decrease term!")
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: Try to decrease term!")
 		labutil.PanicSystem()
 	}
 
 	//only reset voteFor if term grows, to ensure at most one vote per term
 	if term > rf.term {
-		rf.SetVoteFor(InvalidVoteFor)
+		rf.setVoteFor(InvalidVoteFor)
 		//persist for term change and voteFor reset
 		rf.persist()
 	}
@@ -424,7 +430,7 @@ func (rf *Raft) ChangeState(state State, term int) {
 	rf.term = term
 
 	//reset election timer when changing state
-	rf.ResetElectionTimer()
+	rf.resetElectionTimer()
 
 	switch state {
 	case Follower:
@@ -436,7 +442,7 @@ func (rf *Raft) ChangeState(state State, term int) {
 	case Leader:
 		//Candidate -> Leader because of winning election (vote from majority of servers)
 		//initialize nextIndex and matchIndex for each server after election success
-		lastLogIndex := rf.GetLastLogIndex()
+		lastLogIndex := rf.getLastLogIndex()
 		for i := 0; i < len(rf.peers); i++ {
 			rf.nextIndex[i] = lastLogIndex + 1
 			rf.matchIndex[i] = 0
@@ -444,14 +450,14 @@ func (rf *Raft) ChangeState(state State, term int) {
 
 		//issue: send appendentries immediately or not?
 		//ans: Yes?
-		rf.HitHeartBeatTimer()
+		rf.hitHeartBeatTimer()
 	default:
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: Unknown state " + StateToString(state))
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: Unknown state " + StateToString(state))
 	}
 }
 
 //must have outer lock!
-func (rf *Raft) GetLastLogIndex() int {
+func (rf *Raft) getLastLogIndex() int {
 	//index starts from 1
 	if rf.lastIncludedIndex == 0 {
 		return len(rf.logEntries)
@@ -461,7 +467,7 @@ func (rf *Raft) GetLastLogIndex() int {
 }
 
 //must have outer lock!
-func (rf *Raft) GetLastLogTerm() int {
+func (rf *Raft) getLastLogTerm() int {
 	if len(rf.logEntries) == 0 {
 		return -1
 	}
@@ -469,24 +475,23 @@ func (rf *Raft) GetLastLogTerm() int {
 }
 
 //must have outer lock!
-func (rf *Raft) GetLogEntryByIndex(index int) LogEntry {
+func (rf *Raft) getLogEntryByIndex(index int) LogEntry {
 	physicalIndex := index
 	if rf.lastIncludedIndex != 0 {
 		physicalIndex = index - rf.lastIncludedIndex + 1
 	}
-	// println("index = " + strconv.Itoa(index))
-	// println("rf.lastIncludedIndex = " + strconv.Itoa(rf.lastIncludedIndex))
+
 	if physicalIndex-1 >= len(rf.logEntries) {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: len = " + strconv.Itoa(len(rf.logEntries)) + " physicalIndex = " + strconv.Itoa(physicalIndex) + " ,GetLogEntryByIndex: physicalIndex out of range!")
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: len = " + fmt.Sprint(len(rf.logEntries)) + " physicalIndex = " + fmt.Sprint(physicalIndex) + " ,getLogEntryByIndex: physicalIndex out of range!")
 		labutil.PanicSystem()
 	}
 	return rf.logEntries[physicalIndex-1]
 }
 
 //return log entries of index left -> right-1 (logEntries[left-1:right-1])
-//GetLogEntriesByIndexRange(left, 0) = logEntries[left-1:]
+//getLogEntriesByIndexRange(left, 0) = logEntries[left-1:]
 //must have outer lock!
-func (rf *Raft) GetLogEntriesByIndexRange(left int, right int) []LogEntry {
+func (rf *Raft) getLogEntriesByIndexRange(left int, right int) []LogEntry {
 	physicalLeft := left
 	if rf.lastIncludedIndex != 0 {
 		physicalLeft = left - rf.lastIncludedIndex + 1
@@ -495,98 +500,77 @@ func (rf *Raft) GetLogEntriesByIndexRange(left int, right int) []LogEntry {
 	if rf.lastIncludedIndex != 0 {
 		physicalRight = right - rf.lastIncludedIndex + 1
 	}
-	// println("left = " + strconv.Itoa(left))
-	// println("right = " + strconv.Itoa(right))
-	// println("rf.lastIncludedIndex = " + strconv.Itoa(rf.lastIncludedIndex))
 
 	if physicalLeft > physicalRight && right != 0 {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: physicalLeft > physicalRight!")
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: GetLogEntriesByIndex: physicalLeft > physicalRight!")
 		labutil.PanicSystem()
 	}
 	if physicalLeft < 1 {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: physicalLeft < 1!")
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: GetLogEntriesByIndex: physicalLeft < 1!")
 		labutil.PanicSystem()
 	}
-	if right > rf.GetLastLogIndex() {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: GetLogEntriesByIndex: right > lastLogIndex!")
+	if right > rf.getLastLogIndex() {
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: GetLogEntriesByIndex: right > lastLogIndex!")
 		labutil.PanicSystem()
 	}
 	if right == 0 {
-		physicalRight = rf.GetLastLogIndex() + 1
+		physicalRight = rf.getLastLogIndex() + 1
 		if rf.lastIncludedIndex != 0 {
-			physicalRight = rf.GetLastLogIndex() + 1 - rf.lastIncludedIndex + 1
+			physicalRight = rf.getLastLogIndex() + 1 - rf.lastIncludedIndex + 1
 		}
 	}
 	return rf.logEntries[physicalLeft-1 : physicalRight-1]
 }
 
-//must have outer lock!
-func (rf *Raft) GetPersistData() []byte {
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(rf.term)
-	e.Encode(rf.voteFor)
-	e.Encode(rf.logEntries)
-	e.Encode(rf.commitIndex)
-	e.Encode(rf.lastIncludedIndex)
-	e.Encode(rf.lastIncludedTerm)
-	e.Encode(rf.lastApplied)
-	data := w.Bytes()
-	return data
-}
-
-func (rf *Raft) Lock() {
+func (rf *Raft) lock() {
 	rf.mu.Lock()
-	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Lock")
+	//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Lock")
 }
 
-func (rf *Raft) Unlock() {
+func (rf *Raft) unlock() {
 	rf.mu.Unlock()
-	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Unlock")
+	//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Unlock")
 }
 
-func (rf *Raft) StartApplyLog() {
-	rf.Lock()
+func (rf *Raft) startApplyLog() {
+	rf.lock()
 
 	var msgs []ApplyMsg
-	if rf.lastApplied < rf.lastIncludedIndex { //this condition is critical
+	if rf.lastAppliedIndex < rf.lastIncludedIndex { //this condition is critical
 		msgs = make([]ApplyMsg, 0, 1)
 		msgs = append(msgs, ApplyMsg{
 			CommandValid: false,
 			Command:      nil,
 			CommandIndex: rf.lastIncludedIndex,
 		})
-		//println("Server[" + fmt.Sprint(rf.me) + "]: Invalid, lastApplied = " + fmt.Sprint(rf.lastApplied) + " lastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
-	} else if rf.commitIndex <= rf.lastApplied {
-		//println("Server[" + strconv.Itoa(rf.me) + "]: commitIndex <= lastApplied")
+		//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "]: Invalid, lastAppliedIndex = " + fmt.Sprint(rf.lastAppliedIndex) + " lastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
+	} else if rf.commitIndex <= rf.lastAppliedIndex {
+		//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "]: commitIndex <= lastAppliedIndex")
 		msgs = make([]ApplyMsg, 0)
 	} else {
-		//println("Server[" + fmt.Sprint(rf.me) + "]: ApplyLog")
+		//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "]: ApplyLog")
 
-		msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
-		//println("Server[" + fmt.Sprint(rf.me) + "] LastApplied = " + fmt.Sprint(rf.lastApplied))
-		//println("Server[" + fmt.Sprint(rf.me) + "] LastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
-		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+		msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastAppliedIndex)
+		//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "] lastAppliedIndex = " + fmt.Sprint(rf.lastAppliedIndex))
+		//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "] LastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
+		for i := rf.lastAppliedIndex + 1; i <= rf.commitIndex; i++ {
 			msgs = append(msgs, ApplyMsg{
 				CommandValid: true,
-				Command:      rf.GetLogEntryByIndex(i).Command,
+				Command:      rf.getLogEntryByIndex(i).Command,
 				CommandIndex: i,
 			})
 		}
 	}
 
-	rf.Unlock()
+	rf.unlock()
 
 	//lock has to be released before sending to applyCh(whose size may be 1)
 	for _, msg := range msgs {
-		//println("Try to apply msg")
 		rf.applyCh <- msg
-		rf.Lock()
-		//rf.lastApplied = msg.CommandIndex //lastApplied is updated here, even for invalid applyMsg
-		rf.SetLastApplied(msg.CommandIndex)
-		rf.commitIndex = labutil.MaxOfInt(rf.commitIndex, rf.lastApplied)
-		rf.Unlock()
-		//println("Applied msg")
+		rf.lock()
+		rf.setLastApplied(msg.CommandIndex)                               //lastAppliedIndex is updated here, even for invalid applyMsg
+		rf.commitIndex = labutil.MaxOfInt(rf.commitIndex, rf.lastAppliedIndex) //issue: is this necessary?
+		rf.unlock()
 	}
 }
 
@@ -619,15 +603,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.electionTimer = time.NewTimer(ElectionTimeoutMax)
 	rf.heartBeatTimer = time.NewTimer(HeartBeatTimeout)
 	rf.applyTimer = time.NewTimer(ApplyTimeout)
-	rf.ResetElectionTimer()
-	rf.ResetHeartBeatTimer()
-	rf.ResetApplyTimer()
+	rf.resetElectionTimer()
+	rf.resetHeartBeatTimer()
+	rf.resetApplyTimer()
 
 	rf.stopCh = make(chan struct{})
 	rf.applyCh = applyCh
 
 	rf.commitIndex = 0
-	rf.lastApplied = 0
+	rf.lastAppliedIndex = 0
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
@@ -646,16 +630,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			case <-rf.stopCh:
 				return
 			case <-rf.heartBeatTimer.C:
-				rf.Lock()
+				rf.lock()
 				flag := rf.state == Leader
-				rf.Unlock()
+				rf.unlock()
 				if flag {
-					rf.StartHeartBeat()
-					//HeartBeatNum++
+					rf.startHeartBeat()
 				}
-				rf.Lock()
-				rf.ResetHeartBeatTimer()
-				rf.Unlock()
+				rf.lock()
+				rf.resetHeartBeatTimer()
+				rf.unlock()
 			}
 		}
 	}()
@@ -667,19 +650,19 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			case <-rf.stopCh:
 				return
 			case <-rf.electionTimer.C:
-				rf.Lock()
+				rf.lock()
 				flag := rf.state == Follower
-				rf.Unlock()
+				rf.unlock()
 				if flag {
-					rf.Lock()
+					rf.lock()
 					//increase term when start election
-					rf.ChangeState(Candidate, rf.term+1)
-					rf.Unlock()
-					rf.StartElection()
+					rf.changeState(Candidate, rf.term+1)
+					rf.unlock()
+					rf.startElection()
 				} else {
-					rf.Lock()
-					rf.ResetElectionTimer()
-					rf.Unlock()
+					rf.lock()
+					rf.resetElectionTimer()
+					rf.unlock()
 				}
 			}
 		}
@@ -692,25 +675,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			case <-rf.stopCh:
 				return
 			case <-rf.applyTimer.C:
-				rf.StartApplyLog()
-				rf.Lock()
-				rf.ResetApplyTimer()
-				rf.Unlock()
+				rf.startApplyLog()
+				rf.lock()
+				rf.resetApplyTimer()
+				rf.unlock()
 			}
 		}
 	}()
-
-	// //Show Counting Variables
-	// go func() {
-	// 	for {
-	// 		//labutil.PrintMessage("HeartBeatNum = " + strconv.Itoa(HeartBeatNum))
-	// 		//labutil.PrintMessage("RPC_AE_TotalCallNum = " + strconv.Itoa(RPC_AE_TotalCallNum))
-	// 		//labutil.PrintMessage("RPC_RV_TotalCallNum = " + strconv.Itoa(RPC_RV_TotalCallNum))
-	// 		//labutil.PrintMessage("RPC_ConcurrentCallNum = " + strconv.Itoa(RPC_ConcurrentCallNum))
-	// 		//labutil.PrintMessage("-----------------------------")
-	// 		time.Sleep(1 * time.Second)
-	// 	}
-	// }()
 
 	return rf
 }

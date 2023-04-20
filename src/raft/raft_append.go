@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"strconv"
+	"fmt"
 	"time"
 
 	"../labutil"
@@ -23,35 +23,31 @@ type AppendEntriesReply struct {
 
 //Log entries to send during APPENDENTRIES RPC is generated here
 //must have outer lock!
-func (rf *Raft) GetAppendEntriesArgs(peerIdx int) AppendEntriesArgs {
+func (rf *Raft) getAppendEntriesArgs(peerIdx int) AppendEntriesArgs {
 	nextIdx := rf.nextIndex[peerIdx]
-	lastLogIdx := rf.GetLastLogIndex()
+	lastLogIdx := rf.getLastLogIndex()
 	//default empty log for heartbeat
 	prevLogIndex := lastLogIdx
-	//println("prevLogIndex = " + fmt.Sprint(prevLogIndex))
-	prevLogTerm := rf.GetLastLogTerm()
+	prevLogTerm := rf.getLastLogTerm()
 	entries := make([]LogEntry, 0)
 
 	if nextIdx > lastLogIdx || nextIdx < rf.lastIncludedIndex {
 		//no log to send
 		//send empty entries
-		//println("Next ?")
 		prevLogIndex = lastLogIdx
-		prevLogTerm = rf.GetLastLogTerm()
+		prevLogTerm = rf.getLastLogTerm()
 	} else {
 		//no-empty log to send
 		prevLogIndex = nextIdx - 1
-		//println("prevLogIndex(n) = " + fmt.Sprint(prevLogIndex))
 		if prevLogIndex == 0 && rf.lastIncludedIndex == 0 { //first log entry
 			prevLogTerm = InvalidTerm
 		} else if prevLogIndex < rf.lastIncludedIndex {
 			prevLogTerm = rf.lastIncludedTerm
 		} else {
-			prevLogTerm = rf.GetLogEntryByIndex(prevLogIndex).Term
+			prevLogTerm = rf.getLogEntryByIndex(prevLogIndex).Term
 		}
 		//may send more than one entries for efficiency
-		//entries = append(entries, rf.logEntries[nextIdx-1:]...)
-		entries = append(entries, rf.GetLogEntriesByIndexRange(prevLogIndex+1, 0)...)
+		entries = append(entries, rf.getLogEntriesByIndexRange(prevLogIndex+1, 0)...)
 	}
 
 	args := AppendEntriesArgs{
@@ -68,10 +64,10 @@ func (rf *Raft) GetAppendEntriesArgs(peerIdx int) AppendEntriesArgs {
 
 func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	//RPC receiver function is locked
-	rf.Lock()
-	defer rf.Unlock()
+	rf.lock()
+	defer rf.unlock()
 	if len(args.Entries) > 0 {
-		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPC_CALLEE_AppendEntries from Server[" + strconv.Itoa(args.LeaderId) + "] (size = " + strconv.Itoa(len(args.Entries)) + ")")
+		labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: <RPC-Receive> RPC_CALLEE_AppendEntries from Server[" + fmt.Sprint(args.LeaderId) + "] (size = " + fmt.Sprint(len(args.Entries)) + ")")
 	}
 
 	//default reply: not success
@@ -93,16 +89,16 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 
 	//Impossible situation: leader receives an AppendEntries RPC from a leader with the same term!
 	if args.Term == rf.term && rf.state == Leader {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) +
-			"]: Leader receives AppendEntries RPC from another Leader with the same term " + strconv.Itoa(rf.term))
+		labutil.PrintException("Server[" + fmt.Sprint(rf.me) +
+			"]: Leader receives AppendEntries RPC from another Leader with the same term " + fmt.Sprint(rf.term))
 		labutil.PanicSystem()
 		return
 	}
 
-	rf.ChangeState(Follower, args.Term) //reset election timer in ChangeState
+	rf.changeState(Follower, args.Term) //reset election timer in changeState
 
 	if len(args.Entries) != 0 {
-		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try to append log entries from leader RPC")
+		labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Try to append log entries from leader RPC")
 	}
 
 	//replicate log entries
@@ -111,9 +107,9 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 		return
 	}
 	//2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
-	if rf.GetLastLogIndex() < args.PrevLogIndex ||
+	if rf.getLastLogIndex() < args.PrevLogIndex ||
 		((args.PrevLogIndex >= rf.lastIncludedIndex || (args.PrevLogIndex == 0 && rf.lastIncludedIndex == 0)) && args.PrevLogTerm != InvalidTerm &&
-			rf.GetLogEntryByIndex(args.PrevLogIndex).Term != args.PrevLogTerm) {
+			rf.getLogEntryByIndex(args.PrevLogIndex).Term != args.PrevLogTerm) {
 		return
 	}
 	//3. if an existing entry conflicts with a new one (same index but different terms)
@@ -123,37 +119,37 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 	for i := 0; i < len(args.Entries); i++ {
 		index = args.PrevLogIndex + 1 + i
 		//condition index > 0 is not necessary
-		if index > 0 && rf.GetLastLogIndex() >= index && rf.GetLogEntryByIndex(index).Term != args.Entries[i].Term {
+		if index > 0 && rf.getLastLogIndex() >= index && rf.getLogEntryByIndex(index).Term != args.Entries[i].Term {
 			//delete all entries after index (truncate)
-			labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Truncate logEntries of index range [1, " + strconv.Itoa(index) + "), last commit index = " + strconv.Itoa(rf.commitIndex))
+			labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Truncate logEntries of index range [1, " + fmt.Sprint(index) + "), last commit index = " + fmt.Sprint(rf.commitIndex))
 
 			//rf.logEntries = rf.logEntries[:index-1]
 			start := 1
 			if rf.lastIncludedIndex > 0 {
 				start = rf.lastIncludedIndex
 			}
-			rf.SetLogEntries(rf.GetLogEntriesByIndexRange(start, index))
+			rf.setLogEntries(rf.getLogEntriesByIndexRange(start, index))
 			break
-		} else if index > 0 && rf.GetLastLogIndex() >= index && rf.GetLogEntryByIndex(index).Term == args.Entries[i].Term {
+		} else if index > 0 && rf.getLastLogIndex() >= index && rf.getLogEntryByIndex(index).Term == args.Entries[i].Term {
 			max_i_InLog = i
 		}
 	}
 
 	//4. append any new entries <not already> in the log, don't forget to slice args.Entries!
 	//rf.logEntries = append(rf.logEntries, args.Entries[max_i_InLog+1:len(args.Entries)]...)
-	rf.AppendLogEntries(args.Entries[max_i_InLog+1 : len(args.Entries)]...)
+	rf.appendLogEntries(args.Entries[max_i_InLog+1 : len(args.Entries)]...)
 
 	//5. if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
 	//piggyback commitIndex here!
 	if args.LeaderCommit > rf.commitIndex {
-		newCommitIndex := labutil.MinOfInt(args.LeaderCommit, rf.GetLastLogIndex())
+		newCommitIndex := labutil.MinOfInt(args.LeaderCommit, rf.getLastLogIndex())
 		//Non-Leader commit log entries
-		rf.SetCommitIndex(newCommitIndex)
-		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Non-Leader commitIndex updated to " + strconv.Itoa(rf.commitIndex))
+		rf.setCommitIndex(newCommitIndex)
+		labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Non-Leader commitIndex updated to " + fmt.Sprint(rf.commitIndex))
 	}
 
 	if len(args.Entries) != 0 {
-		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Append log entries from leader RPC success")
+		labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Append log entries from leader RPC success")
 	}
 
 	reply.Success = true
@@ -163,7 +159,7 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	//no RPC timeout yet
 	if len(args.Entries) > 0 {
-		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Send> RPC_CALLER_AppendEntriesToPeer to Server[" + strconv.Itoa(peerIdx) + "] (size = " + strconv.Itoa(len(args.Entries)) + ")")
+		labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: <RPC-Send> RPC_CALLER_AppendEntriesToPeer to Server[" + fmt.Sprint(peerIdx) + "] (size = " + fmt.Sprint(len(args.Entries)) + ")")
 	}
 
 	rpcBacthTimer := time.NewTimer(RPCBatchTimeout)
@@ -173,12 +169,12 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 	defer rpcSingleTimer.Stop()
 
 	for {
-		rf.Lock()
+		rf.lock()
 		if rf.state != Leader {
-			rf.Unlock()
+			rf.unlock()
 			return false
 		}
-		rf.Unlock()
+		rf.unlock()
 
 		rpcSingleTimer.Stop()
 		rpcSingleTimer.Reset(RPCSingleTimeout)
@@ -194,9 +190,9 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 			//4. never return (single RPC call timeout, retry, no reply)
 			//give up if batch RPC call timeout after several retries
 			//RPC reply may come in any order
-			rf.Lock()
+			rf.lock()
 			peer := rf.peers[peerIdx]
-			rf.Unlock()
+			rf.unlock()
 			//no lock for parallel RPC call
 			//RPC_AE_TotalCallNum++
 			//RPC_ConcurrentCallNum++
@@ -209,21 +205,21 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 		case <-rf.stopCh:
 			return false
 		case <-rpcSingleTimer.C:
-			//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Retry")
+			//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "]: RPC-AppendEntries Time Out Retry")
 			// retry single RPC call
 			continue
 		case <-rpcBacthTimer.C:
-			//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Time Out Quit")
+			//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "]: RPC-AppendEntries Time Out Quit")
 			return false
 			//continue //retry indefinitely
 		case ok := <-ch:
 			if !ok {
-				//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> RPC_CALLER_AppendEntriesToPeer to Server[" + strconv.Itoa(peerIdx) + "] failed, Retry")
+				//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: <RPC-Error> rpc_CALLER_AppendEntriesToPeer to Server[" + fmt.Sprint(peerIdx) + "] failed, Retry")
 				//sleep for a short time to avoid busy loop if RPC call fails immediately
 				time.Sleep(RPCInterval)
 				continue
 			} else {
-				//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: RPC-AppendEntries Not Time Out, Success")
+				//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "]: RPC-AppendEntries Not Time Out, Success")
 				reply.Term = rTemp.Term
 				reply.Success = rTemp.Success
 				return ok
@@ -233,65 +229,42 @@ func (rf *Raft) RPC_CALLER_AppendEntriesToPeer(peerIdx int, args *AppendEntriesA
 	return false //should never reach here
 }
 
-func (rf *Raft) StartHeartBeat() {
+func (rf *Raft) startHeartBeat() {
 	//parallel append empty enyries to all followers
-	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartHeartBeat")
-	// rf.Lock()
-	// defer rf.Unlock()
+	labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: startHeartBeat")
+	// rf.lock()
+	// defer rf.unlock()
 
 	for ii := 0; ii < len(rf.peers); ii++ {
-		rf.Lock()
+		rf.lock()
 		if rf.state != Leader {
-			rf.Unlock()
+			rf.unlock()
 			return
 		}
-		rf.Unlock()
+		rf.unlock()
 		if ii != rf.me {
 			go func(i int) {
 				//try different nextIndex[i]
 				for !rf.killed() {
-					rf.Lock()
+					rf.lock()
 					//get args to append
 					//may have empty entry for heartbeat checking or non-empty entries for log replication
 					if rf.state != Leader {
-						rf.Unlock()
+						rf.unlock()
 						return
 					}
 
 					flag := rf.nextIndex[i] < rf.lastIncludedIndex
-					rf.Unlock()
+					rf.unlock()
 					if flag {
-						// println("Server[" + fmt.Sprint(rf.me) + "]: " + "==========try SN==========")
-						// println("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex has been outdated")
-						// println("Server["+fmt.Sprint(rf.me)+"]: "+"nextindex = ", rf.nextIndex[i])
-						// println("Server["+fmt.Sprint(rf.me)+"]: "+"lastIncludedIndex = ", rf.lastIncludedIndex)
-						go rf.SendInstallSnapshot(i)
+						go rf.sendInstallSnapshot(i)
 						return // give up AE this time
 					}
 
-					// 	//rf.Lock()
-					// 	flag = rf.nextIndex[i] < rf.lastIncludedIndex
-					// 	//rf.Unlock()
-					// 	if flag {
-					// 		return
-					// 		labutil.PrintException("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex not updated")
-					// 		println("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex has been updated")
-					// 		println("Server["+fmt.Sprint(rf.me)+"]: "+"nextindex = ", rf.nextIndex[i])
-					// 		println("Server["+fmt.Sprint(rf.me)+"]: "+"lastIncludedIndex = ", rf.lastIncludedIndex)
-					// 		labutil.PanicSystem()
-					// 	} else {
-					// 		println("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex has been updated")
-					// 		println("Server["+fmt.Sprint(rf.me)+"]: "+"nextindex = ", rf.nextIndex[i])
-					// 		println("Server["+fmt.Sprint(rf.me)+"]: "+"lastIncludedIndex = ", rf.lastIncludedIndex)
-					// 	}
-
-					// 	println("Server[" + fmt.Sprint(rf.me) + "]: " + "==========end SN==========")
-					// }
-
-					rf.Lock()
-					args := rf.GetAppendEntriesArgs(i)
+					rf.lock()
+					args := rf.getAppendEntriesArgs(i)
 					reply := AppendEntriesReply{}
-					rf.Unlock()
+					rf.unlock()
 
 					//no need to lock (parallel)
 					//have internal check for state == Leader
@@ -299,27 +272,25 @@ func (rf *Raft) StartHeartBeat() {
 					if !ok {
 						//issue: try indifinitely or give up if RPC(Caller) call fails?
 						//ans: give up. retry in next heartbeat AE
-						//println("Fail")
 						return
 						//retry to AE forever until success or not current leader anymore
 						//continue
 					}
-					//println("h4")
 
 					//rf.term, rf.state may be different after AE!
 
-					rf.Lock()
+					rf.lock()
 					if reply.Term > rf.term {
 						//issue: should the leader update term and change to follower
 						//even receiving from APPENDENTRIES RPC reply from the new candidate?
 						//ans: Yes(candidate first)
-						rf.ChangeState(Follower, reply.Term)
+						rf.changeState(Follower, reply.Term)
 					}
 
 					//isssue: does the server need to response to AE reply if it is not current leader?
 					//ans: No
 					if rf.state != Leader || rf.term != args.Term {
-						rf.Unlock()
+						rf.unlock()
 						return
 					}
 
@@ -329,24 +300,24 @@ func (rf *Raft) StartHeartBeat() {
 						rf.matchIndex[i] = rf.nextIndex[i] - 1
 
 						//update commitIndex if condition satisfied (called even for appending empty entries)
-						rf.UpdateLeaderCommitIndex()
-						rf.Unlock()
+						rf.updateLeaderCommitIndex()
+						rf.unlock()
 						return
 					} else {
 						//decrease nextIndex and retry (slow backup)
 						if rf.nextIndex[i] <= 1 {
-							rf.Unlock()
+							rf.unlock()
 							//every try fails
 							//issue: is that normal?
-							labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try AE for every nextIndex all failed!")
+							labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Try AE for every nextIndex all failed!")
 							//issue: need to send snapshot?
 							return
 						}
 
 						//No fast backup
 						rf.nextIndex[i]--
-						//labutil.PrintMessage("Server[" + strconv.Itoa(rf.me) + "]: Retry AE to Server[" + strconv.Itoa(i) + "], nextIndex = " + strconv.Itoa(rf.nextIndex[i]))
-						rf.Unlock()
+						//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "]: Retry AE to Server[" + fmt.Sprint(i) + "], nextIndex = " + fmt.Sprint(rf.nextIndex[i]))
+						rf.unlock()
 						continue
 					}
 
@@ -358,26 +329,26 @@ func (rf *Raft) StartHeartBeat() {
 }
 
 //must have outer lock
-func (rf *Raft) UpdateLeaderCommitIndex() {
+func (rf *Raft) updateLeaderCommitIndex() {
 	//if there exists an N such that N > commitIndex, a majority of matchIndex[i] >= N,
 	//and log[N].term == currentTerm:
 	//set commitIndex = N
-	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Try to UpdateLeaderCommitIndex")
+	labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Try to updateLeaderCommitIndex")
 
-	//labutil.PrintDebug("rf.commitIndex = " + strconv.Itoa(rf.commitIndex) + ", rf.GetLastLogIndex() = " + strconv.Itoa(rf.GetLastLogIndex()))
+	//labutil.PrintDebug("rf.commitIndex = " + fmt.Sprint(rf.commitIndex) + ", rf.getLastLogIndex() = " + fmt.Sprint(rf.getLastLogIndex()))
 	updated := false
 
 	//checking N from large to small
 	//issue: which is better, large to small or small to large?
-	//for N := rf.GetLastLogIndex(); N >= rf.commitIndex+1; N-- {
-	for N := rf.commitIndex + 1; N <= rf.GetLastLogIndex(); N++ {
+	//for N := rf.getLastLogIndex(); N >= rf.commitIndex+1; N-- {
+	for N := rf.commitIndex + 1; N <= rf.getLastLogIndex(); N++ {
 		//check if log[N].term == currentTerm
-		//labutil.PrintDebug("Checking N = " + strconv.Itoa(N))
+		//labutil.PrintDebug("Checking N = " + fmt.Sprint(N))
 		if rf.lastIncludedIndex != 0 && N-rf.lastIncludedIndex+1 < 0 {
-			println("Strange: commitIndex = ", rf.commitIndex, ", lastIncludedIndex = ", rf.lastIncludedIndex, ", N = ", N)
+			labutil.PrintWarning("Strange: commitIndex = " + fmt.Sprint(rf.commitIndex) + ", lastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex) + ", N = " + fmt.Sprint(N))
 			continue
 		}
-		if rf.GetLogEntryByIndex(N).Term != rf.term {
+		if rf.getLogEntryByIndex(N).Term != rf.term {
 			//only commit log entries of current term!
 			continue
 		}
@@ -387,8 +358,8 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 				count++
 				if count > len(rf.peers)/2 {
 					//Leader commit log entries
-					rf.SetCommitIndex(N)
-					labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: Leader commitIndex updated to " + strconv.Itoa(rf.commitIndex))
+					rf.setCommitIndex(N)
+					labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: Leader commitIndex updated to " + fmt.Sprint(rf.commitIndex))
 					updated = true
 					break
 				}
@@ -399,6 +370,6 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 		}
 	}
 	if !updated {
-		labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: UpdateLeaderCommitIndex Failed")
+		labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: updateLeaderCommitIndex Failed")
 	}
 }

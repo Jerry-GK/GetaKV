@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"strconv"
+	"fmt"
 	"time"
 
 	"../labutil"
@@ -34,16 +34,16 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RPC_CALLEE_RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	//RPC receiver function is locked
-	rf.Lock()
-	defer rf.Unlock()
-	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Receive> RPC_CALLEE_RequestVote from Server[" + strconv.Itoa(args.CandidateId) + "]")
+	rf.lock()
+	defer rf.unlock()
+	//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: <RPC-Receive> RPC_CALLEE_RequestVote from Server[" + fmt.Sprint(args.CandidateId) + "]")
 
 	//default reply: not granted
 	reply.Term = rf.term
 	reply.VoteGranted = false
 
-	lastLogIndex := rf.GetLastLogIndex()
-	lastLogTerm := rf.GetLastLogTerm()
+	lastLogIndex := rf.getLastLogIndex()
+	lastLogTerm := rf.getLastLogTerm()
 
 	if args.Term < rf.term {
 		return
@@ -62,9 +62,9 @@ func (rf *Raft) RPC_CALLEE_RequestVote(args *RequestVoteArgs, reply *RequestVote
 					//log condition not satisfied
 					return
 				}
-				rf.SetVoteFor(args.CandidateId)
+				rf.setVoteFor(args.CandidateId)
 				reply.VoteGranted = true
-				rf.ResetElectionTimer() // reset election timer when first vote for a candidate
+				rf.resetElectionTimer() // reset election timer when first vote for a candidate
 				return
 			} else if rf.voteFor == args.CandidateId {
 				//has voted for this candidate
@@ -85,14 +85,14 @@ func (rf *Raft) RPC_CALLEE_RequestVote(args *RequestVoteArgs, reply *RequestVote
 		//ans: vote immediately
 
 		//become Follower and vote for the candidate immediately
-		rf.ChangeState(Follower, args.Term) //reset election timer in ChangeState
+		rf.changeState(Follower, args.Term) //reset election timer in changeState
 		//try to first vote imeediately
 		//election restriction
 		if lastLogTerm > args.LastLogTerm || (lastLogTerm == args.LastLogTerm && lastLogIndex > args.LastLogIndex) {
 			//log condition not satisfied
 			return
 		}
-		rf.SetVoteFor(args.CandidateId)
+		rf.setVoteFor(args.CandidateId)
 		reply.VoteGranted = true
 		return
 	}
@@ -130,7 +130,7 @@ func (rf *Raft) RPC_CALLEE_RequestVote(args *RequestVoteArgs, reply *RequestVote
 //
 func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	//no RPC timeout yet
-	//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Send> RPC_CALLER_SendRequestVote to Server[" + strconv.Itoa(peerIdx) + "]")
+	//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: <RPC-Send> RPC_CALLER_SendRequestVote to Server[" + fmt.Sprint(peerIdx) + "]")
 
 	rpcBacthTimer := time.NewTimer(RPCBatchTimeout)
 	defer rpcBacthTimer.Stop()
@@ -139,12 +139,12 @@ func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, r
 	defer rpcSingleTimer.Stop()
 
 	for {
-		rf.Lock()
+		rf.lock()
 		if rf.state != Candidate {
-			rf.Unlock()
+			rf.unlock()
 			return false
 		}
-		rf.Unlock()
+		rf.unlock()
 
 		rpcSingleTimer.Stop()
 		rpcSingleTimer.Reset(RPCSingleTimeout)
@@ -160,9 +160,9 @@ func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, r
 			//4. never return (single RPC call timeout, retry, no reply)
 			//give up if batch RPC call timeout after several retries
 			//RPC reply may come in any order
-			rf.Lock()
+			rf.lock()
 			peer := rf.peers[peerIdx]
-			rf.Unlock()
+			rf.unlock()
 			//no lock for parallel RPC call
 			//RPC_RV_TotalCallNum++
 			//RPC_ConcurrentCallNum++
@@ -175,15 +175,15 @@ func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, r
 		case <-rf.stopCh:
 			return false
 		case <-rpcSingleTimer.C:
-			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Retry")
+			//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: RPC-RequestVote Time Out Retry")
 			// retry single RPC call
 			continue
 		case <-rpcBacthTimer.C:
-			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: RPC-RequestVote Time Out Quit")
+			//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: RPC-RequestVote Time Out Quit")
 			return false
 		case ok := <-ch:
 			if !ok {
-				//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: <RPC-Error> RPC_CALLER_SendRequestVote to Server[" + strconv.Itoa(peerIdx) + "], Retry")
+				//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: <RPC-Error> RPC_CALLER_SendRequestVote to Server[" + fmt.Sprint(peerIdx) + "], Retry")
 				//sleep for a short time to avoid busy loop if RPC call fails immediately
 				time.Sleep(RPCInterval)
 				continue
@@ -198,26 +198,26 @@ func (rf *Raft) RPC_CALLER_SendRequestVote(peerIdx int, args *RequestVoteArgs, r
 	return false //should never reach here
 }
 
-func (rf *Raft) StartElection() {
-	labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: StartElection")
-	//rf.ChangeState(Candidate) has been called
+func (rf *Raft) startElection() {
+	labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: startElection")
+	//rf.changeState(Candidate) has been called
 	//has an outer lock
-	// rf.Lock()
-	// defer rf.Unlock()
+	// rf.lock()
+	// defer rf.unlock()
 
-	rf.Lock()
+	rf.lock()
 
 	//parallel request vote from all peers
 	args := &RequestVoteArgs{
 		Term:         rf.term,
 		CandidateId:  rf.me,
-		LastLogIndex: rf.GetLastLogIndex(),
-		LastLogTerm:  rf.GetLastLogTerm(),
+		LastLogIndex: rf.getLastLogIndex(),
+		LastLogTerm:  rf.getLastLogTerm(),
 	}
 
 	//vote for self
-	rf.SetVoteFor(rf.me)
-	rf.Unlock()
+	rf.setVoteFor(rf.me)
+	rf.unlock()
 
 	voteGrantedCount := 1
 
@@ -227,13 +227,13 @@ func (rf *Raft) StartElection() {
 		if ii != rf.me {
 			go func(ch chan bool, i int) {
 				var reply RequestVoteReply
-				rf.Lock()
+				rf.lock()
 				if rf.state != Candidate {
-					rf.Unlock()
+					rf.unlock()
 					ch <- reply.VoteGranted
 					return
 				}
-				rf.Unlock()
+				rf.unlock()
 
 				ok := rf.RPC_CALLER_SendRequestVote(i, args, &reply) //no need to lock (parallel)
 				if !ok {
@@ -245,14 +245,14 @@ func (rf *Raft) StartElection() {
 
 				//rf.term, rf.state may be different after RV!
 
-				rf.Lock()
+				rf.lock()
 
 				if reply.Term > rf.term {
 					//candidate should always give up election if receive RPC with higher term
-					rf.ChangeState(Follower, reply.Term)
+					rf.changeState(Follower, reply.Term)
 				}
 
-				rf.Unlock()
+				rf.unlock()
 				ch <- reply.VoteGranted
 			}(votesCh, ii)
 		}
@@ -264,9 +264,9 @@ func (rf *Raft) StartElection() {
 		case <-rf.stopCh:
 			return
 		case g := <-votesCh: //get vote
-			//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: get vote " + strconv.FormatBool(g))
+			//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: get vote " + fmt.Sprint(g))
 			voteFromOthers++
-			rf.Lock()
+			rf.lock()
 			flag := g && rf.state == Candidate
 
 			if flag {
@@ -274,35 +274,35 @@ func (rf *Raft) StartElection() {
 				//leader condition: majority votes (more than half)
 				if voteGrantedCount > len(rf.peers)/2 {
 					//no need to wait for all votes if already able to become leader
-					rf.ChangeState(Leader, rf.term)
-					rf.Unlock()
+					rf.changeState(Leader, rf.term)
+					rf.unlock()
 					return
 				}
 			}
 			if voteFromOthers >= len(rf.peers)-1 {
 				if rf.state != Leader {
-					//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: lose election")
-					//rf.ChangeState(Follower, rf.term - 1) //is that right?
-					rf.ChangeState(Follower, rf.term)
+					//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: lose election")
+					//rf.changeState(Follower, rf.term - 1) //is that right?
+					rf.changeState(Follower, rf.term)
 				}
-				rf.Unlock()
+				rf.unlock()
 				return
 			}
-			rf.Unlock()
+			rf.unlock()
 
 		case <-rf.electionTimer.C: //election timeout, become follower
-			rf.Lock()
+			rf.lock()
 			if rf.state == Candidate {
-				//labutil.PrintDebug("Server[" + strconv.Itoa(rf.me) + "]: election timeout")
+				//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: election timeout")
 				//do not decrease term!
-				rf.ChangeState(Follower, rf.term)
-				rf.Unlock()
+				rf.changeState(Follower, rf.term)
+				rf.unlock()
 				return
 			} else {
-				//labutil.PrintWarning("Server[" + strconv.Itoa(rf.me) + "]: election timeout, but not candidate")
+				//labutil.PrintWarning("Server[" + fmt.Sprint(rf.me) + "]: election timeout, but not candidate")
 				//issue: is that normal?
 			}
-			rf.Unlock()
+			rf.unlock()
 		}
 	}
 

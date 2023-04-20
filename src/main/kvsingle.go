@@ -12,7 +12,7 @@ type Command struct {
 	Value string
 }
 
-func parse(input string) Command {
+func Parse(input string) Command {
 	//parse to be implemented
 	cmd := Command{
 		Op:    "GET",
@@ -23,8 +23,22 @@ func parse(input string) Command {
 }
 
 func main() {
-	ends := make([]*labrpc.ClientEnd, 5) //should come from kvservice
+	//make service
+	serverNum := 5
+	maxraftstate := 1000
 
+	net := labrpc.MakeNetwork()
+	endnames := make([]string, serverNum)
+	ends := make([]*labrpc.ClientEnd, serverNum)
+
+	// for j := 0; j < serverNum; j++ {
+	// 	ends[j] = net.MakeEnd(cfg.endnames[i][j])
+	// 	cfg.net.Connect(endnames[i][j], j)
+	// }
+
+	KVServive := StartKVService(serverNum, maxraftstate, ends)
+
+	//make single client
 	ck := kvraft.MakeClerk(ends)
 
 	quit := false
@@ -32,7 +46,7 @@ func main() {
 	for !quit {
 		//input command
 		input := "GET 0"
-		cmd := parse(input)
+		cmd := Parse(input)
 
 		switch cmd.Op {
 		case "PUT":

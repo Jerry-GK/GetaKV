@@ -2,7 +2,6 @@ package raft
 
 import (
 	"time"
-
 	//"../labutil"
 )
 
@@ -23,8 +22,8 @@ type InstallSnapshotReply struct {
 }
 
 func (rf *Raft) RPC_CALLEE_InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
-	rf.Lock()
-	defer rf.Unlock()
+	rf.lock()
+	defer rf.unlock()
 
 	reply.Term = rf.term
 
@@ -33,29 +32,29 @@ func (rf *Raft) RPC_CALLEE_InstallSnapshot(args *InstallSnapshotArgs, reply *Ins
 		return
 	}
 
-	rf.ChangeState(Follower, args.Term)
+	rf.changeState(Follower, args.Term)
 
 	if rf.lastIncludedIndex >= args.LastIncludedIndex {
 		return
 	}
 
 	//snapshot
-	//discard the entire log
 	startIndex := args.LastIncludedIndex //startIndex >= args.LastIncludedIndex >= 1
-	if startIndex > rf.GetLastLogIndex() {
-		rf.SetLogEntries(make([]LogEntry, 0))
+	if startIndex > rf.getLastLogIndex() {
+		rf.setLogEntries(make([]LogEntry, 0))
 	} else {
-		rf.SetLogEntries(rf.GetLogEntriesByIndexRange(startIndex, 0))
+		rf.setLogEntries(rf.getLogEntriesByIndexRange(startIndex, 0))
 	}
 
-	rf.SetLastIncludedIndex(args.LastIncludedIndex)
-	rf.SetLastIncludedTerm(args.LastIncludedTerm)
+	rf.setLastIncludedIndex(args.LastIncludedIndex)
+	rf.setLastIncludedTerm(args.LastIncludedTerm)
 
 	//issue: is this right?
 	//ans: No, cannot make kv server readPeristSnapshot here
 	// rf.SetCommitIndex(labutil.MaxOfInt(rf.commitIndex, rf.lastIncludedIndex))
-	// rf.lastApplied = labutil.MaxOfInt(rf.lastApplied, rf.lastIncludedIndex)
-	rf.persister.SaveStateAndSnapshot(rf.GetPersistData(), args.Data)
+	// rf.lastAppliedIndex = labutil.MaxOfInt(rf.lastAppliedIndex, rf.lastIncludedIndex)
+
+	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), args.Data)
 }
 
 func (rf *Raft) RPC_CALLER_InstallSnapshot(peerIdx int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
@@ -66,12 +65,12 @@ func (rf *Raft) RPC_CALLER_InstallSnapshot(peerIdx int, args *InstallSnapshotArg
 	defer rpcSingleTimer.Stop()
 
 	for {
-		rf.Lock()
+		rf.lock()
 		if rf.state != Leader {
-			rf.Unlock()
+			rf.unlock()
 			return false
 		}
-		rf.Unlock()
+		rf.unlock()
 
 		rpcSingleTimer.Stop()
 		rpcSingleTimer.Reset(RPCSingleTimeout)
@@ -80,9 +79,9 @@ func (rf *Raft) RPC_CALLER_InstallSnapshot(peerIdx int, args *InstallSnapshotArg
 		rTemp := RequestVoteReply{}
 
 		go func() {
-			rf.Lock()
+			rf.lock()
 			peer := rf.peers[peerIdx]
-			rf.Unlock()
+			rf.unlock()
 			//RPC call may
 			//1. return immediately (ok ==  true or ok == false, false may cause busy loop)
 			//2. return after a short time (ok == true or ok == false)
@@ -118,9 +117,9 @@ func (rf *Raft) RPC_CALLER_InstallSnapshot(peerIdx int, args *InstallSnapshotArg
 	return false //should never reach here
 }
 
-func (rf *Raft) SendInstallSnapshot(peerIdx int) {
-	//println("Server[" + fmt.Sprint(rf.me) + "]: InstallSnapshot Call to " + fmt.Sprint(peerIdx))
-	rf.Lock()
+func (rf *Raft) sendInstallSnapshot(peerIdx int) {
+	//labutil.PrintDebug("Server[" + fmt.Sprint(rf.me) + "]: InstallSnapshot Call to " + fmt.Sprint(peerIdx))
+	rf.lock()
 	args := InstallSnapshotArgs{
 		Term:              rf.term,
 		LeaderId:          rf.me,
@@ -133,12 +132,12 @@ func (rf *Raft) SendInstallSnapshot(peerIdx int) {
 	}
 	reply := InstallSnapshotReply{}
 	if rf.state != Leader {
-		rf.Unlock()
+		rf.unlock()
 		return
 	}
-	rf.Unlock()
+	rf.unlock()
 
-	for !rf.killed() {
+	for !rf.killed() { //!killed() is necessary!
 		ok := rf.RPC_CALLER_InstallSnapshot(peerIdx, &args, &reply) //may block here!
 		if !ok {
 			//no retry if install snapshot RPC caller fails
@@ -150,11 +149,11 @@ func (rf *Raft) SendInstallSnapshot(peerIdx int) {
 		}
 	}
 
-	rf.Lock()
-	defer rf.Unlock()
+	rf.lock()
+	defer rf.unlock()
 
 	if reply.Term > rf.term {
-		rf.ChangeState(Follower, reply.Term)
+		rf.changeState(Follower, reply.Term)
 		return
 	}
 

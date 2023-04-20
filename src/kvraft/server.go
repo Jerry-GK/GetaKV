@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 
-	//"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -12,8 +11,6 @@ import (
 
 	"../labgob"
 	"../labrpc"
-
-	"strconv"
 
 	"../labutil"
 	"../raft"
@@ -70,42 +67,29 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
-	nextOpId       TypeOpId
+	persister *raft.Persister
+
+	nextOpId TypeOpId
+	//persistent
 	kvData         map[string]string
 	lastApplyMsgId map[TypeClientId]ClerkMsgId //avoid duplicate apply
-
-	persister *raft.Persister
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	// // issue: does read-only operation(like GET) need to go through Raft module?
 	// // ans: Yes. To ensure consistency and order of operations?
-	// _, isLeader := kv.rf.GetState()
-	// reply.Err = OK
-	// if !isLeader {
-	// 	reply.Err = ErrWrongLeader
-	// 	return
-	// }
 
-	// if kv.kvData[args.Key] == "" {
-	// 	//println("No key, msgId = " + fmt.Sprint(op.MsgId))
-	// 	reply.Err = ErrNoKey
-	// }
-	// reply.Value = kv.kvData[args.Key]
-
-	kv.Lock()
+	kv.lock()
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
-		kv.UnLock()
+		kv.unlock()
 		return
 	}
 
-	kv.nextOpId = kv.GetNextOpId()
-	//issue: how to snapshot nextOpId?
-	//kv.SaveSnapshot()
+	kv.nextOpId = kv.getNextOpId()
+
 	op := Op{
 		Method:   GET,
 		Key:      args.Key,
@@ -115,39 +99,39 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		ServerId: kv.me,
 		OpId:     kv.nextOpId,
 	}
-	kv.UnLock()
+	kv.unlock()
 
-	//println("serverID = " + fmt.Sprint(kv.me) + ", GET, key = " + op.Key + ", value = " + op.Value + ", msgId = " + fmt.Sprint(op.MsgId) + ", opId = " + fmt.Sprint(op.OpId) + ", clientId = " + fmt.Sprint(op.ClientId))
-	res := kv.WaitOp(op)
+	res := kv.waitOp(op)
 
 	reply.Err = res.Err
 	reply.Value = res.Value
 }
 
-func (kv *KVServer) Lock() {
+func (kv *KVServer) lock() {
 	kv.mu.Lock()
 }
 
-func (kv *KVServer) UnLock() {
+func (kv *KVServer) unlock() {
 	kv.mu.Unlock()
 }
 
 //must have outer lock!
-func (kv *KVServer) GetNextOpId() TypeOpId {
-	return TypeOpId(nrand())
+func (kv *KVServer) getNextOpId() TypeOpId {
+	//return kv.nextOpId + 1
+	return TypeOpId(nrand()) //assume to be unique
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	kv.Lock()
+	kv.lock()
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
-		kv.UnLock()
+		kv.unlock()
 		return
 	}
 
-	kv.nextOpId = kv.GetNextOpId()
+	kv.nextOpId = kv.getNextOpId()
 	op := Op{
 		Method:   Method(args.Op),
 		Key:      args.Key,
@@ -157,17 +141,12 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		ServerId: kv.me,
 		OpId:     kv.nextOpId, //assume to be unique
 	}
-	kv.UnLock()
+	kv.unlock()
 
-	//println("serverID = " + fmt.Sprint(kv.me) + ", PUT, key = " + op.Key + ", value = " + op.Value + ", msgId = " + fmt.Sprint(op.MsgId) + ", opId = " + fmt.Sprint(op.OpId) + ", clientId = " + fmt.Sprint(op.ClientId))
-	res := kv.WaitOp(op)
+	res := kv.waitOp(op)
 
 	reply.Err = res.Err
 	//PutAppend does not return value
-
-	if reply.Err == OK {
-		//println("serverID = " + fmt.Sprint(kv.me) + ", PUT " + op.Value + " OK")
-	}
 }
 
 //
@@ -181,8 +160,8 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // to suppress debug output from a Kill()ed instance.
 //
 func (kv *KVServer) Kill() {
-	kv.Lock()
-	defer kv.UnLock()
+	kv.lock()
+	defer kv.unlock()
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
@@ -190,18 +169,18 @@ func (kv *KVServer) Kill() {
 }
 
 func (kv *KVServer) killed() bool {
-	kv.Lock()
-	defer kv.UnLock()
+	kv.lock()
+	defer kv.unlock()
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
 }
 
 //must have outer lock!
-func (kv *KVServer) DeleteOutputCh(opId TypeOpId) {
+func (kv *KVServer) deleteOutputCh(opId TypeOpId) {
 	delete(kv.outPutCh, opId)
 }
 
-func (kv *KVServer) WaitOp(op Op) (res ExeResult) {
+func (kv *KVServer) waitOp(op Op) (res ExeResult) {
 	res.Value = ""
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
@@ -211,72 +190,64 @@ func (kv *KVServer) WaitOp(op Op) (res ExeResult) {
 
 	waitOpTimer := time.NewTimer(WaitOpTimeOut)
 
-	ch := make(chan ExeResult, 1)
-	kv.Lock()
+	ch := make(chan ExeResult, 1) //ch will be deleted if it receives the result from Raft module as a leader, or timeout
+
+	kv.lock()
 	kv.outPutCh[op.OpId] = ch
-	kv.UnLock()
+	kv.unlock()
+
 	for {
 		select {
 		case res_ := <-ch:
-			//println("serverID = " + fmt.Sprint(kv.me) + ", ch rec value = " + op.Value)
 			res.Err = res_.Err
 			res.Value = res_.Value
-			kv.Lock()
-			kv.DeleteOutputCh(op.OpId)
-			kv.UnLock()
+			kv.lock()
+			kv.deleteOutputCh(op.OpId)
+			kv.unlock()
 			return
 		case <-waitOpTimer.C:
 			res.Err = ErrTimeout
-			kv.Lock()
-			kv.DeleteOutputCh(op.OpId)
-			kv.UnLock()
+			kv.lock()
+			kv.deleteOutputCh(op.OpId)
+			kv.unlock()
 			return
 		}
 	}
 }
 
-func (kv *KVServer) WaitApply() {
+func (kv *KVServer) waitApply() {
 	for {
 		select {
 		case <-kv.stopCh:
 			return
 		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
-				//println("Invalid msg!")
-				kv.Lock()
-				kv.ReadSnapshot(kv.persister.ReadSnapshot())
-				kv.UnLock()
+				kv.lock()
+				kv.ReadSnapshot(kv.persister.ReadSnapshot()) //read snapshot if left behind
+				kv.unlock()
 				continue
 			}
 
 			op := msg.Command.(Op)
 			ExeResult := ExeResult{Err: OK, Value: ""}
 
-			kv.Lock()
+			kv.lock()
 			lastMsgId, ok := kv.lastApplyMsgId[op.ClientId]
 			isApplied := ok && lastMsgId == op.MsgId
-			kv.UnLock()
+			kv.unlock()
 
 			//issue: is lastMsgId > op.MsgId possible?
 			if lastMsgId > op.MsgId {
 				labutil.PrintException("Bigger msgId!, lastMsgId = " + fmt.Sprint(lastMsgId) + ", op.MsgId = " + fmt.Sprint(op.MsgId))
 				labutil.PanicSystem()
 			}
-			// _, isLeader := kv.rf.GetState()
-			// if ok && lastMsgId < op.MsgId-1 && isLeader {
-			// 	println("op.msgId = " + fmt.Sprint(op.MsgId))
-			// 	println("lastApplyMsgId = " + fmt.Sprint(lastMsgId))
-			// 	labutil.PrintException("Wrong msgId!")
-			// 	labutil.PanicSystem()
-			// }
 
 			//real apply
 			switch op.Method {
 			case GET:
 				// No data modification
-				kv.Lock()
+				kv.lock()
 				if kv.kvData[op.Key] == "" {
-					//println("No key, msgId = " + fmt.Sprint(op.MsgId))
 					ExeResult.Err = ErrNoKey
 				}
 				ExeResult.Value = kv.kvData[op.Key]
@@ -284,81 +255,72 @@ func (kv *KVServer) WaitApply() {
 					//issue: is it neccessary to update lastApplyMsgId for GET?
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
-				kv.UnLock()
-				//println("Val = " + ExeResult.Value)
-				//println("msgId = " + fmt.Sprint(op.MsgId))
+				kv.unlock()
 			case PUT:
-				kv.Lock()
+				kv.lock()
 				if !isApplied {
 					kv.kvData[op.Key] = op.Value
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
-					//println("serverID = " + fmt.Sprint(kv.me) + ", Apply Put: Key = " + op.Key + ", Value = " + op.Value + ", msgId = " + fmt.Sprint(op.MsgId))
 				}
-				kv.UnLock()
+				kv.unlock()
 			case APPEND:
-				kv.Lock()
+				kv.lock()
 				if !isApplied {
 					kv.kvData[op.Key] += op.Value
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
-				kv.UnLock()
+				kv.unlock()
 			default:
 				labutil.PrintException("Unknown Method")
 				labutil.PanicSystem()
 			}
 
-			kv.Lock()
-			kv.SaveSnapshot(msg.CommandIndex)
+			kv.lock()
+			kv.saveSnapshot(msg.CommandIndex)
 			ch, ok := kv.outPutCh[op.OpId]
 			if ok && op.ServerId == kv.me {
-				//println("serverID = " + fmt.Sprint(kv.me) + ", ch <- ExeResult, Value = " + op.Value + ", Method = " + fmt.Sprint(op.Method) + ", msgId = " + fmt.Sprint(op.MsgId) + ", opId = " + fmt.Sprint(op.OpId) + ", clientId = " + fmt.Sprint(op.ClientId))
 				ch <- ExeResult
 			}
-			kv.UnLock()
+			kv.unlock()
 		}
 	}
 }
 
 //must have outer lock!
-func (kv *KVServer) SaveSnapshot(index int) {
+func (kv *KVServer) saveSnapshot(index int) {
 	//save snapshot only when raftstate size exceeds
 	//Start(cmd) -> apply -> raftstate size grows -> (if exceeds) save snapshot
-	//println("maxraftstate = " + fmt.Sprint(kv.maxraftstate))
-	//println("RaftStateSize = " + fmt.Sprint(kv.persister.RaftStateSize()))
 	if kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
-		kvData := kv.GetSnapshotData()
-		//println("Server[" + fmt.Sprint(kv.me) + "]: Saving snapshot, index = " + fmt.Sprint(index))
+		kvData := kv.getSnapshotData()
+		//labutil.PrintDebug("Server[" + fmt.Sprint(kv.me) + "]: Saving snapshot, index = " + fmt.Sprint(index))
 		kv.rf.SavePersistAndSnapshot(index, kvData)
 	}
 }
 
 //must have outer lock!
-func (kv *KVServer) GetSnapshotData() []byte {
+func (kv *KVServer) getSnapshotData() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-	e.Encode(kv.nextOpId)
 	e.Encode(kv.kvData)
 	e.Encode(kv.lastApplyMsgId)
 	data := w.Bytes()
 	return data
 }
 
+//may be called by other modules
 func (kv *KVServer) ReadSnapshot(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var nextOpId TypeOpId
 	var kvData map[string]string
 	var lastApplyMsgId map[TypeClientId]ClerkMsgId
-	if d.Decode(&nextOpId) != nil ||
-		d.Decode(&kvData) != nil ||
+	if d.Decode(&kvData) != nil ||
 		d.Decode(&lastApplyMsgId) != nil {
-		labutil.PrintException("KVServer[" + strconv.Itoa(kv.me) + "]: readSnapshot failed while decoding!")
+		labutil.PrintException("KVServer[" + fmt.Sprint(kv.me) + "]: readSnapshot failed while decoding!")
 		labutil.PanicSystem()
 	} else {
-		kv.nextOpId = nextOpId
 		kv.kvData = kvData
 		kv.lastApplyMsgId = lastApplyMsgId
 	}
@@ -405,7 +367,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.ReadSnapshot(persister.ReadSnapshot())
 
-	go kv.WaitApply()
+	kv.saveSnapshot(0) //maybe unnecessary
+
+	go kv.waitApply()
 
 	return kv
 }

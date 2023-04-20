@@ -2,10 +2,8 @@ package kvraft
 
 import (
 	"crypto/rand"
-	//"fmt"
 	"math/big"
 
-	//"strconv"
 	"time"
 
 	"../labrpc"
@@ -46,7 +44,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	return ck
 }
 
-func (ck *Clerk) GetNextMsgId() ClerkMsgId {
+func (ck *Clerk) getNextMsgId() ClerkMsgId {
 	return ck.nextMsgId + 1
 }
 
@@ -65,7 +63,7 @@ func (ck *Clerk) GetNextMsgId() ClerkMsgId {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 
-	ck.nextMsgId = ck.GetNextMsgId()
+	ck.nextMsgId = ck.getNextMsgId()
 	args := GetArgs{key, ck.clientId, ck.nextMsgId}
 	//args.msgId is the same for multiple RPC retries
 
@@ -84,10 +82,8 @@ func (ck *Clerk) Get(key string) string {
 
 		switch reply.Err {
 		case OK:
-			//println("Get Success")
 			return reply.Value
 		case ErrNoKey:
-			//println("Get NoKey")
 			return ""
 		case ErrWrongLeader:
 			//try next server to be leader
@@ -95,7 +91,6 @@ func (ck *Clerk) Get(key string) string {
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 			continue
 		case ErrTimeout:
-			//println("Timeout")
 			continue
 		default:
 			labutil.PrintException("Get: Unknown GetReply.Err")
@@ -118,7 +113,7 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	ck.nextMsgId = ck.GetNextMsgId()
+	ck.nextMsgId = ck.getNextMsgId()
 	args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId}
 	//args.msgId is the same for multiple RPC retries
 
@@ -136,7 +131,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 		switch reply.Err {
 		case OK:
-			//println("AP success")
 			return
 		case ErrNoKey:
 			//PutAppend should not return ErrNoKey in reply
@@ -149,7 +143,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			ck.leaderId = (ck.leaderId + 1) % len(ck.servers)
 			continue
 		case ErrTimeout:
-			//println("TimeoutAp")
 			continue
 		default:
 			labutil.PrintException("Get: Unknown GetReply.Err")
