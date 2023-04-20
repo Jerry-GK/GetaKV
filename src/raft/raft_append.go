@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"fmt"
 	"strconv"
 	"time"
 
@@ -262,10 +261,10 @@ func (rf *Raft) StartHeartBeat() {
 					flag := rf.nextIndex[i] < rf.lastIncludedIndex
 					rf.Unlock()
 					if flag {
-						println("Server[" + fmt.Sprint(rf.me) + "]: " + "==========try SN==========")
-						println("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex has been outdated")
-						println("Server["+fmt.Sprint(rf.me)+"]: "+"nextindex = ", rf.nextIndex[i])
-						println("Server["+fmt.Sprint(rf.me)+"]: "+"lastIncludedIndex = ", rf.lastIncludedIndex)
+						// println("Server[" + fmt.Sprint(rf.me) + "]: " + "==========try SN==========")
+						// println("Server[" + fmt.Sprint(rf.me) + "]: " + "nextIndex has been outdated")
+						// println("Server["+fmt.Sprint(rf.me)+"]: "+"nextindex = ", rf.nextIndex[i])
+						// println("Server["+fmt.Sprint(rf.me)+"]: "+"lastIncludedIndex = ", rf.lastIncludedIndex)
 						go rf.SendInstallSnapshot(i)
 						return // give up AE this time
 					}
@@ -374,6 +373,10 @@ func (rf *Raft) UpdateLeaderCommitIndex() {
 	for N := rf.commitIndex + 1; N <= rf.GetLastLogIndex(); N++ {
 		//check if log[N].term == currentTerm
 		//labutil.PrintDebug("Checking N = " + strconv.Itoa(N))
+		if rf.lastIncludedIndex != 0 && N-rf.lastIncludedIndex+1 < 0 {
+			println("Strange: commitIndex = ", rf.commitIndex, ", lastIncludedIndex = ", rf.lastIncludedIndex, ", N = ", N)
+			continue
+		}
 		if rf.GetLogEntryByIndex(N).Term != rf.term {
 			//only commit log entries of current term!
 			continue

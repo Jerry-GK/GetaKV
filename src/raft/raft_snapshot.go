@@ -1,8 +1,9 @@
 package raft
 
 import (
-	"fmt"
 	"time"
+
+	//"../labutil"
 )
 
 type InstallSnapshotArgs struct {
@@ -50,10 +51,10 @@ func (rf *Raft) RPC_CALLEE_InstallSnapshot(args *InstallSnapshotArgs, reply *Ins
 	rf.SetLastIncludedIndex(args.LastIncludedIndex)
 	rf.SetLastIncludedTerm(args.LastIncludedTerm)
 
-	// //issue: is this right?
-	// rf.commitIndex = labutil.MaxOfInt(rf.commitIndex, rf.lastIncludedIndex)
+	//issue: is this right?
+	//ans: No, cannot make kv server readPeristSnapshot here
+	// rf.SetCommitIndex(labutil.MaxOfInt(rf.commitIndex, rf.lastIncludedIndex))
 	// rf.lastApplied = labutil.MaxOfInt(rf.lastApplied, rf.lastIncludedIndex)
-
 	rf.persister.SaveStateAndSnapshot(rf.GetPersistData(), args.Data)
 }
 
@@ -118,7 +119,7 @@ func (rf *Raft) RPC_CALLER_InstallSnapshot(peerIdx int, args *InstallSnapshotArg
 }
 
 func (rf *Raft) SendInstallSnapshot(peerIdx int) {
-	println("Server[" + fmt.Sprint(rf.me) + "]: InstallSnapshot Call to " + fmt.Sprint(peerIdx))
+	//println("Server[" + fmt.Sprint(rf.me) + "]: InstallSnapshot Call to " + fmt.Sprint(peerIdx))
 	rf.Lock()
 	args := InstallSnapshotArgs{
 		Term:              rf.term,
@@ -137,7 +138,7 @@ func (rf *Raft) SendInstallSnapshot(peerIdx int) {
 	}
 	rf.Unlock()
 
-	for {
+	for !rf.killed() {
 		ok := rf.RPC_CALLER_InstallSnapshot(peerIdx, &args, &reply) //may block here!
 		if !ok {
 			//no retry if install snapshot RPC caller fails
@@ -149,25 +150,19 @@ func (rf *Raft) SendInstallSnapshot(peerIdx int) {
 		}
 	}
 
-	println("SN suc")
 	rf.Lock()
 	defer rf.Unlock()
 
 	if reply.Term > rf.term {
 		rf.ChangeState(Follower, reply.Term)
-		println("return 1")
 		return
 	}
 
 	if rf.state != Leader || rf.term != args.Term {
-		println("return 2")
 		return
 	}
 
-	println("SN success")
-
 	if rf.nextIndex[peerIdx] < args.LastIncludedIndex+1 {
-		println("reset nextIndex = ", args.LastIncludedIndex+1)
 		rf.nextIndex[peerIdx] = args.LastIncludedIndex + 1
 	}
 	if rf.matchIndex[peerIdx] < args.LastIncludedIndex {

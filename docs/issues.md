@@ -105,8 +105,6 @@
 
     最终决定策略1(这才是Raft的选择，这可能是整个Raft的一个重要基础。但能不能优化成leader优先？candidate优先是否可能导致选举和leader更替太频繁？)
 
-    
-
 - 问题5: 如果leader接收到来自另一个leader的RPC-APPENDENTRIES，会发生什么？(比如一个leader经过一段时间从failure中回复，这段时间内生成的新leader给该leader发生了RPC-APPENDENTRIES)
 
     答案: 相对明显，无论是哪种策略，都是如果接受方发现自己term低，就同步term、变成follower。
@@ -325,14 +323,46 @@
 - 问题3: 当leader的某些log entry复制到大多数server并commit后，如果进行了snapshot、删掉这些entry后，它们还如何复制到剩下的其它server中？
 
     答案：它们不需要再复制。事实上snapshot时，如果对某个server[i]发送SN RPC成功，那么会修改对应leader的nextIndex[i]的值，使那些可能还没复制到其他serevr、但已被snapshot截断删去的那些log entries不用再被复制。
+    
+- 问题4: , lastLogIndex, commitIndex, lastApplied, lastIncludedIndex是什么含义、有什么关系？
 
-
-
-
-
-
-
-
+    - 含义
+    
+        首先想象有一部完整的逻辑日志（包括想象前面已经被物理删去的entry）
+    
+        - lastLogIndex: 最后一条log entry的index。逻辑日志为空时此值为0。
+    
+        - commitIndex: 初始化为无效值0。1 -> commitIndex是已经被commit了的index范围，这部分entry可能有后一部分正在等待被apply。
+    
+        - lastAppliedIndex: 初始化为无效值0。1 -> lastAppliedIndex是已经被apply、随时可以被snapshot截断的范围。
+    
+        - lastIncludedIndedx: 如果没有进行任何快照，那么此值为0(初始化值)。否则，1 -> lastIncludeIndedx-1是上一次快照完成后已被删除的entry的范围(访问这部分entry会越界，是lab过程的一大重要问题)，lastIncludeIndedx -> lastLogIndex是当前情况下有物理日志对应的index范围，这部分的entry才能被访问。
+    
+            注意，虽然lastIncludedIndex没有被删，但是它对应的entry在快照中已经被apply，属于无用entry。Follower接收到IS时，如果commitIndex或lastAplliedIndex小于lastIncludedIndex，应该置成lastIncludedIndex，尽管该entry并可能没有物理对应。
+    
+    - 递增性：
+    
+        这些属性都是**递增**的，不可能存在下降的情况，否则是严重的逻辑错误。
+    
+        但注意，非持久化的属性启动时会回归初始化值。但会被快速恢复？（见持久性）
+    
+    - 关系：
+    
+        一般情况下，**0 <= lastIncludedIndex <= lastAppliedIndex <= commitIndex <= lastLogIndex**
+    
+        因为commit需要log entry存在、apply需要已经commit、被快照删除需要已经apply。
+    
+        但是快照不仅可以来自于自身定时持久化，还可能来自leader的InstallSnapshot RPC，此时会传来强制同步的服务器snapshot数据和lastIncludedIndex，但并不会传来leader的logEntries，接收到IS的follower会删去args.lastIncludedIndex之前的entries（如果args.lastIncludeIndex比自身lastLogIndex要大，那么自身logEntries变为空）。
+    
+    - 持久性：
+    
+        这属性中，lastIncludedIndex, commitIndex需要持久化，lastAppliedIndex, lastLogIndex则不需要。
+    
+        注意lastLogIndex其实是实时根据logEntries得到的，logEntries是需要持久化的，所以其实也可以理解为lastLogIndex也是持久化的值。
+    
+        唯一不需要持久化的值是lastAppliedIndex，因为这个值会在发送ApplyMsg检测到异常时回复给其需要更新的最新值。
+    
+        当然，也可以对lastAppliedIndex持久化，但是不必要而已。
 
 
 

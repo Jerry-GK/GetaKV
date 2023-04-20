@@ -19,7 +19,6 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -192,13 +191,15 @@ func (rf *Raft) readPersist(data []byte) {
 	var commitIndex int
 	var lastIncludedIndex int
 	var lastIncludedTerm int
+	var lastApplied int
 
 	if d.Decode(&term) != nil ||
 		d.Decode(&voteFor) != nil ||
 		d.Decode(&logEntries) != nil ||
 		d.Decode(&commitIndex) != nil ||
 		d.Decode(&lastIncludedIndex) != nil ||
-		d.Decode(&lastIncludedTerm) != nil {
+		d.Decode(&lastIncludedTerm) != nil ||
+		d.Decode(&lastApplied) != nil {
 		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: readPersist failed while decoding!")
 		labutil.PanicSystem()
 	} else {
@@ -208,6 +209,7 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.commitIndex = commitIndex
 		rf.lastIncludedIndex = lastIncludedIndex
 		rf.lastIncludedTerm = lastIncludedTerm
+		//rf.lastApplied = lastApplied //issue: is lastApplied need to be persisted?
 	}
 }
 
@@ -376,10 +378,10 @@ func (rf *Raft) SetCommitIndex(index int) {
 		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot decrease!")
 		labutil.PanicSystem()
 	}
-	if index > rf.GetLastLogIndex() {
-		labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot exceed the last log index!")
-		labutil.PanicSystem()
-	}
+	// if index > rf.GetLastLogIndex() {
+	// 	labutil.PrintException("Server[" + strconv.Itoa(rf.me) + "]: SetCommitIndex: commitIndex cannot exceed the last log index!")
+	// 	labutil.PanicSystem()
+	// }
 
 	rf.commitIndex = index
 
@@ -387,6 +389,11 @@ func (rf *Raft) SetCommitIndex(index int) {
 		//trigger apply log
 		rf.HitApplyTimer()
 	}
+	rf.persist()
+}
+
+func (rf *Raft) SetLastApplied(lastApplied int) {
+	rf.lastApplied = lastApplied
 	rf.persist()
 }
 
@@ -523,6 +530,7 @@ func (rf *Raft) GetPersistData() []byte {
 	e.Encode(rf.commitIndex)
 	e.Encode(rf.lastIncludedIndex)
 	e.Encode(rf.lastIncludedTerm)
+	e.Encode(rf.lastApplied)
 	data := w.Bytes()
 	return data
 }
@@ -538,7 +546,6 @@ func (rf *Raft) Unlock() {
 }
 
 func (rf *Raft) StartApplyLog() {
-	//	println("ApplyLog")
 	rf.Lock()
 
 	var msgs []ApplyMsg
@@ -549,14 +556,16 @@ func (rf *Raft) StartApplyLog() {
 			Command:      nil,
 			CommandIndex: rf.lastIncludedIndex,
 		})
-		println("Server[" + fmt.Sprint(rf.me) + "]: Invalid, lastApplied = " + fmt.Sprint(rf.lastApplied) + " lastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
+		//println("Server[" + fmt.Sprint(rf.me) + "]: Invalid, lastApplied = " + fmt.Sprint(rf.lastApplied) + " lastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
 	} else if rf.commitIndex <= rf.lastApplied {
 		//println("Server[" + strconv.Itoa(rf.me) + "]: commitIndex <= lastApplied")
 		msgs = make([]ApplyMsg, 0)
 	} else {
+		//println("Server[" + fmt.Sprint(rf.me) + "]: ApplyLog")
+
 		msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastApplied)
-		println("Server[" + fmt.Sprint(rf.me) + "] LastApplied = " + fmt.Sprint(rf.lastApplied))
-		println("Server[" + fmt.Sprint(rf.me) + "] LastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
+		//println("Server[" + fmt.Sprint(rf.me) + "] LastApplied = " + fmt.Sprint(rf.lastApplied))
+		//println("Server[" + fmt.Sprint(rf.me) + "] LastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
 		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 			msgs = append(msgs, ApplyMsg{
 				CommandValid: true,
@@ -573,7 +582,9 @@ func (rf *Raft) StartApplyLog() {
 		//println("Try to apply msg")
 		rf.applyCh <- msg
 		rf.Lock()
-		rf.lastApplied = msg.CommandIndex //lastApplied is updated here, even for invalid applyMsg
+		//rf.lastApplied = msg.CommandIndex //lastApplied is updated here, even for invalid applyMsg
+		rf.SetLastApplied(msg.CommandIndex)
+		rf.commitIndex = labutil.MaxOfInt(rf.commitIndex, rf.lastApplied)
 		rf.Unlock()
 		//println("Applied msg")
 	}
