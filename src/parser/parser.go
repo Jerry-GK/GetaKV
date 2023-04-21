@@ -6,17 +6,23 @@ type Command struct {
 	Op    string
 	Key   string
 	Value string
+	Error string
 }
 
-func Parse(input string) Command {
+type Parser struct {
+	//no members yet
+}
+
+func (p *Parser) Parse(input string) Command {
 	//parse to be implemented
 	//exampe:
-	// <"GET 0">, <"PUT 0 1">, <"APPEND 0 1">
+	// <"GET 0">, <"PUT 0 1">, <"APPEND 0 1">, <"QUIT">
 
 	cmd := Command{
 		Op:    "INVALID",
 		Key:   "",
 		Value: "",
+		Error: "Empty Command",
 	}
 
 	ss := strings.Fields(input) //separate by space
@@ -25,39 +31,56 @@ func Parse(input string) Command {
 		return cmd
 	}
 
-	ss[0] = strings.ToUpper(ss[0])
+	op := strings.ToUpper(ss[0])
 
-	if len == 1 {
-		if ss[0] == "QUIT" {
-			cmd = Command{
-				Op:    "QUIT",
-				Key:   "",
-				Value: "",
-			}
-		}
-	} else if len == 2 {
-		if ss[0] == "GET" {
+	switch op {
+	case "GET":
+		if len == 2 {
 			cmd = Command{
 				Op:    "GET",
 				Key:   ss[1],
 				Value: "",
 			}
+		} else {
+			cmd.Error = "GET should have exactly 1 argument (spaces in string not available)"
 		}
-	} else if len == 3 {
-		if ss[0] == "PUT" {
+	case "PUT":
+		if len == 3 {
 			cmd = Command{
 				Op:    "PUT",
 				Key:   ss[1],
 				Value: ss[2],
 			}
-		} else if ss[0] == "APPEND" {
+		} else {
+			cmd.Error = "PUT should have exactly 2 arguments (spaces in string not available)"
+		}
+	case "APPEND":
+		if len == 3 {
 			cmd = Command{
 				Op:    "APPEND",
 				Key:   ss[1],
 				Value: ss[2],
 			}
+		} else {
+			cmd.Error = "APPEND should have exactly 2 arguments (spaces in string not available)"
 		}
+	case "QUIT":
+		if len == 1 {
+			cmd = Command{
+				Op:    "QUIT",
+				Key:   "",
+				Value: "",
+			}
+		} else {
+			cmd.Error = "Invalid QUIT Command"
+		}
+	default:
+		cmd.Error = "Unknown Operation: " + op
 	}
 
 	return cmd
+}
+
+func MakeParser() *Parser {
+	return &Parser{}
 }

@@ -45,7 +45,7 @@
   
   - Fix the bug for non-stop InstallSnapshot RPC if the server is killed
   
-  - Pass all tests
+  - Pass all tests, with potential bugs
   
 - **[23-4-21]  Add single node KV and parser**
 

@@ -82,6 +82,10 @@ func main() {
 	ck := kvraft.MakeClerk(ends)
 	reader := bufio.NewReader(os.Stdin)
 	quit := false
+
+	//make parser
+	ps := parser.MakeParser()
+
 	for !quit {
 		//input command
 		labutil.PrintDirect("\n\nGetaKV > ")
@@ -90,7 +94,7 @@ func main() {
 		line, _, _ := reader.ReadLine()
 		input = string(line)
 
-		cmd := parser.Parse(input)
+		cmd := ps.Parse(input)
 
 		switch cmd.Op {
 		case "PUT":
@@ -102,14 +106,14 @@ func main() {
 		case "GET":
 			value := ck.Get(cmd.Key)
 			if value == "" {
-				labutil.PrintDirect("Get Failed. Key Not Found")
+				labutil.PrintDirect("Get Failed: Key Not Found")
 			} else {
-				labutil.PrintDirect("Get Success. Value = " + value)
+				labutil.PrintDirect("Get Success: Value = " + value)
 			}
 		case "QUIT":
 			quit = true
 		case "INVALID":
-			labutil.PrintDirect("Invalid Command!")
+			labutil.PrintDirect("Invalid Command! Error: " + cmd.Error)
 		default:
 			labutil.PrintException("Unknown Command Type: " + cmd.Op)
 			labutil.PanicSystem()

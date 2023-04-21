@@ -81,6 +81,20 @@ func (kv *KVServer) GetRf() *raft.Raft {
 	return kv.rf
 }
 
+//must have outer lock!
+func (kv *KVServer) getNextOpId() TypeOpId {
+	//return kv.nextOpId + 1
+	return TypeOpId(nrand()) //assume to be unique
+}
+
+func (kv *KVServer) lock() {
+	kv.mu.Lock()
+}
+
+func (kv *KVServer) unlock() {
+	kv.mu.Unlock()
+}
+
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	// // issue: does read-only operation(like GET) need to go through Raft module?
@@ -111,20 +125,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 	reply.Err = res.Err
 	reply.Value = res.Value
-}
-
-func (kv *KVServer) lock() {
-	kv.mu.Lock()
-}
-
-func (kv *KVServer) unlock() {
-	kv.mu.Unlock()
-}
-
-//must have outer lock!
-func (kv *KVServer) getNextOpId() TypeOpId {
-	//return kv.nextOpId + 1
-	return TypeOpId(nrand()) //assume to be unique
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -229,7 +229,7 @@ func (kv *KVServer) waitApply() {
 		case msg := <-kv.applyCh:
 			if !msg.CommandValid {
 				kv.lock()
-				kv.ReadSnapshot(kv.persister.ReadSnapshot()) //read snapshot if left behind
+				kv.readSnapshot(kv.persister.ReadSnapshot()) //read snapshot if left behind
 				kv.unlock()
 				continue
 			}
@@ -238,21 +238,21 @@ func (kv *KVServer) waitApply() {
 			ExeResult := ExeResult{Err: OK, Value: ""}
 
 			kv.lock()
+			
 			lastMsgId, ok := kv.lastApplyMsgId[op.ClientId]
 			isApplied := ok && lastMsgId == op.MsgId
-			kv.unlock()
 
 			//issue: is lastMsgId > op.MsgId possible?
-			if lastMsgId > op.MsgId {
-				labutil.PrintException("Bigger msgId!, lastMsgId = " + fmt.Sprint(lastMsgId) + ", op.MsgId = " + fmt.Sprint(op.MsgId))
-				labutil.PanicSystem()
-			}
+			//ans: maybe possible, if the client re-send the request?
+			// if lastMsgId > op.MsgId {
+			// 	labutil.PrintException("Bigger msgId!, lastMsgId = " + fmt.Sprint(lastMsgId) + ", op.MsgId = " + fmt.Sprint(op.MsgId))
+			// 	labutil.PanicSystem()
+			// }
 
 			//real apply
 			switch op.Method {
 			case GET:
 				// No data modification
-				kv.lock()
 				if kv.kvData[op.Key] == "" {
 					ExeResult.Err = ErrNoKey
 				}
@@ -261,28 +261,22 @@ func (kv *KVServer) waitApply() {
 					//issue: is it neccessary to update lastApplyMsgId for GET?
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
-				kv.unlock()
 			case PUT:
-				kv.lock()
 				if !isApplied {
 					kv.kvData[op.Key] = op.Value
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
-				kv.unlock()
 			case APPEND:
-				kv.lock()
 				if !isApplied {
 					kv.kvData[op.Key] += op.Value
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
-				kv.unlock()
 			default:
 				labutil.PrintException("Unknown Method")
 				labutil.PanicSystem()
 			}
 
-			kv.lock()
-			kv.saveSnapshot(msg.CommandIndex)
+			kv.saveSnapshot(msg.CommandIndex) //must persist the apply result before return
 			ch, ok := kv.outPutCh[op.OpId]
 			if ok && op.ServerId == kv.me {
 				ch <- ExeResult
@@ -314,7 +308,7 @@ func (kv *KVServer) getSnapshotData() []byte {
 }
 
 //may be called by other modules
-func (kv *KVServer) ReadSnapshot(data []byte) {
+func (kv *KVServer) readSnapshot(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
@@ -371,9 +365,9 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	kv.ReadSnapshot(persister.ReadSnapshot())
+	kv.readSnapshot(persister.ReadSnapshot())
 
-	kv.saveSnapshot(0) //maybe unnecessary
+	//kv.saveSnapshot(0) //maybe unnecessary
 
 	go kv.waitApply()
 

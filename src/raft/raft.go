@@ -553,7 +553,7 @@ func (rf *Raft) startApplyLog() {
 		msgs = make([]ApplyMsg, 0, rf.commitIndex-rf.lastAppliedIndex)
 		//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "] lastAppliedIndex = " + fmt.Sprint(rf.lastAppliedIndex))
 		//labutil.PrintMessage("Server[" + fmt.Sprint(rf.me) + "] LastIncludedIndex = " + fmt.Sprint(rf.lastIncludedIndex))
-		for i := rf.lastAppliedIndex + 1; i <= rf.commitIndex; i++ {
+		for i := rf.lastAppliedIndex + 1; i <= rf.commitIndex && i <= rf.getLastLogIndex(); i++ {
 			msgs = append(msgs, ApplyMsg{
 				CommandValid: true,
 				Command:      rf.getLogEntryByIndex(i).Command,
@@ -568,8 +568,8 @@ func (rf *Raft) startApplyLog() {
 	for _, msg := range msgs {
 		rf.applyCh <- msg
 		rf.lock()
-		rf.setLastApplied(msg.CommandIndex)                               //lastAppliedIndex is updated here, even for invalid applyMsg
-		rf.commitIndex = labutil.MaxOfInt(rf.commitIndex, rf.lastAppliedIndex) //issue: is this necessary?
+		rf.setLastApplied(msg.CommandIndex) //lastAppliedIndex is updated here, even for invalid applyMsg
+		//rf.commitIndex = labutil.MaxOfInt(rf.commitIndex, rf.lastAppliedIndex) //issue: is this necessary?
 		rf.unlock()
 	}
 }
