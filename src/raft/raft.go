@@ -224,6 +224,10 @@ func (rf *Raft) SavePersistAndSnapshot(index int, snapshot []byte) {
 	rf.lock()
 	defer rf.unlock()
 
+	if index == 0 { //save before quit
+		rf.persister.SaveStateAndSnapshot(rf.getPersistData(), snapshot)
+	}
+
 	if index <= rf.lastIncludedIndex {
 		return
 	}
@@ -235,13 +239,9 @@ func (rf *Raft) SavePersistAndSnapshot(index int, snapshot []byte) {
 	}
 
 	// delete all log entries before lastIncludedIndex
-	if index > 0 {
-		rf.setLogEntries(rf.getLogEntriesByIndexRange(index, 0))
-		rf.setLastIncludedIndex(index)
-		rf.setLastIncludedTerm(rf.getLogEntryByIndex(index).Term)
-	}
-
-	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), snapshot)
+	rf.setLogEntries(rf.getLogEntriesByIndexRange(index, 0))
+	rf.setLastIncludedIndex(index)
+	rf.setLastIncludedTerm(rf.getLogEntryByIndex(index).Term)
 }
 
 //
@@ -300,6 +300,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	rf.persister.Close()
 	close(rf.stopCh)
 }
 

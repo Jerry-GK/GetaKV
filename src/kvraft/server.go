@@ -169,6 +169,7 @@ func (kv *KVServer) Kill() {
 	kv.lock()
 	defer kv.unlock()
 	atomic.StoreInt32(&kv.dead, 1)
+	kv.saveSnapshot(0) //save before quit
 	kv.rf.Kill()
 	// Your code here, if desired.
 	close(kv.stopCh)
@@ -238,7 +239,7 @@ func (kv *KVServer) waitApply() {
 			ExeResult := ExeResult{Err: OK, Value: ""}
 
 			kv.lock()
-			
+
 			lastMsgId, ok := kv.lastApplyMsgId[op.ClientId]
 			isApplied := ok && lastMsgId == op.MsgId
 
@@ -290,7 +291,7 @@ func (kv *KVServer) waitApply() {
 func (kv *KVServer) saveSnapshot(index int) {
 	//save snapshot only when raftstate size exceeds
 	//Start(cmd) -> apply -> raftstate size grows -> (if exceeds) save snapshot
-	if kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
+	if index == 0 || kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
 		kvData := kv.getSnapshotData()
 		//labutil.PrintDebug("Server[" + fmt.Sprint(kv.me) + "]: Saving snapshot, index = " + fmt.Sprint(index))
 		kv.rf.SavePersistAndSnapshot(index, kvData)
@@ -366,8 +367,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.readSnapshot(persister.ReadSnapshot())
-
-	//kv.saveSnapshot(0) //maybe unnecessary
 
 	go kv.waitApply()
 

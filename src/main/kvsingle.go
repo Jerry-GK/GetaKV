@@ -37,7 +37,7 @@ func StartKVService(serverNum int, maxraftstate int, ends []*labrpc.ClientEnd) *
 	kvs.persisters = make([]*raft.Persister, serverNum)
 
 	for i := 0; i < serverNum; i++ {
-		kvs.persisters[i] = raft.MakePersister()
+		kvs.persisters[i] = raft.MakePersisterWithFile(i)
 		kvs.kvservers[i] = kvraft.StartKVServer(kvs.ends, i, kvs.persisters[i], maxraftstate)
 	}
 

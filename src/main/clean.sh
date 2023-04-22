@@ -6,3 +6,5 @@ rm -f mr-done
 rm -f mrmaster
 rm -f mrsequential
 rm -f mrworker
+rm files/*.rf
+rm files/*.kv
