@@ -1,6 +1,6 @@
 # GetaKV
 
-<img src="assets/image-20230430160829265.png" alt="image-20230430160829265" style="zoom:30%;" />
+<img src="assets/image-20230430170806048.png" alt="image-20230430170806048" style="zoom:40%;" />
 
 ## Introduction
 
@@ -9,7 +9,6 @@ It is based on the labs of **MIT-6.824**.
 
 - **Lab1: MapReduce** ✅
 - **Lab2: Raft** ✅
-
   - Lab2A: Leader Election ✅
     - Lab2B: Log Replication ✅
     - Lab2C: Persistent States ✅
