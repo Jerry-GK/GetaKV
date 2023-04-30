@@ -1,5 +1,7 @@
 # GetaKV
 
+<img src="assets/image-20230430155718769.png" alt="image-20230430155718769" style="zoom:30%;" />
+
 ## Introduction
 
 **GetaKV** is a **Shard Key/Value System** using **Raft** to support distributed fault-tolerance.
@@ -8,8 +10,7 @@ It is based on the labs of **MIT-6.824**.
 - **Lab1: MapReduce** ✅
 
 - **Lab2: Raft** ✅
-  
-    - Lab2A: Leader Election ✅
+  - Lab2A: Leader Election ✅
     - Lab2B: Log Replication ✅
     - Lab2C: Persistent States ✅
     
