@@ -1,6 +1,6 @@
 # GetaKV
 
-<img src="assets/image-20230430160204145.png" alt="image-20230430160204145" style="zoom:30%;" />
+<img src="assets/image-20230430160829265.png" alt="image-20230430160829265" style="zoom:30%;" />
 
 ## Introduction
 
