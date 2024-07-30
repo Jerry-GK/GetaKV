@@ -226,6 +226,7 @@ func (rf *Raft) SavePersistAndSnapshot(index int, snapshot []byte) {
 
 	if index == 0 { //save before quit
 		rf.persister.SaveStateAndSnapshot(rf.getPersistData(), snapshot)
+		return;
 	}
 
 	if index <= rf.lastIncludedIndex {
@@ -238,10 +239,11 @@ func (rf *Raft) SavePersistAndSnapshot(index int, snapshot []byte) {
 		return
 	}
 
-	// delete all log entries before lastIncludedIndex
+	// delete all log entries before lastIncludedIndex and save
 	rf.setLogEntries(rf.getLogEntriesByIndexRange(index, 0))
 	rf.setLastIncludedIndex(index)
 	rf.setLastIncludedTerm(rf.getLogEntryByIndex(index).Term)
+	rf.persister.SaveStateAndSnapshot(rf.getPersistData(), snapshot)
 }
 
 //
