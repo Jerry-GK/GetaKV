@@ -154,7 +154,7 @@
 
 ### Lab2B
 
-- 问题1:  如何理解matchIndex和nexrIndex的关系？matchIndex[i] = nextIndex[i] - 1什么时候才成立？
+- 问题1:  如何理解matchIndex和nextIndex的关系？matchIndex[i] = nextIndex[i] - 1什么时候才成立？
 
     答案：（直接引用guide中的解答）
 

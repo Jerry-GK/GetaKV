@@ -61,7 +61,7 @@ const (
 
 	// RPCSingleTimeout: may cause too long time to wait for a single RPC response if too big
 	// RPCSingleTimeout: may canuse too many RPC Calls if too small
-	RPCSingleTimeout = time.Millisecond * 100
+	RPCSingleTimeout = time.Millisecond * 3000
 	// RPCBatchTimeout: may ignore all RPC with long latency if too small
 	// RPCBatchTimeout: may cause more RPC Calls and too long time to wait for a batch RPC response(in a RPC Caller) if too big,
 	// which can be replaced by retry in the new RPC Caller of a new HeartBeat
