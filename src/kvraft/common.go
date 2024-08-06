@@ -15,6 +15,8 @@ type TypeClientId int64
 
 type TypeOpId int64
 
+type Method string
+
 // Put or Append
 type PutAppendArgs struct {
 	Key   string

@@ -32,8 +32,6 @@ const (
 	APPEND = "Append"
 )
 
-type Method string
-
 type ExeResult struct {
 	Err   Err
 	Value string
@@ -81,7 +79,7 @@ func (kv *KVServer) GetRf() *raft.Raft {
 	return kv.rf
 }
 
-//must have outer lock!
+// must have outer lock!
 func (kv *KVServer) getNextOpId() TypeOpId {
 	//return kv.nextOpId + 1
 	return TypeOpId(nrand()) //assume to be unique
@@ -109,7 +107,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	kv.nextOpId = kv.getNextOpId()
-
 	op := Op{
 		Method:   GET,
 		Key:      args.Key,
@@ -155,7 +152,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	//PutAppend does not return value
 }
 
-//
 // the tester calls Kill() when a KVServer instance won't
 // be needed again. for your convenience, we supply
 // code to set rf.dead (without needing a lock),
@@ -164,7 +160,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // code to Kill(). you're not required to do anything
 // about this, but it may be convenient (for example)
 // to suppress debug output from a Kill()ed instance.
-//
 func (kv *KVServer) Kill() {
 	kv.lock()
 	defer kv.unlock()
@@ -182,7 +177,7 @@ func (kv *KVServer) killed() bool {
 	return z == 1
 }
 
-//must have outer lock!
+// must have outer lock!
 func (kv *KVServer) deleteOutputCh(opId TypeOpId) {
 	delete(kv.outPutCh, opId)
 }
@@ -287,7 +282,7 @@ func (kv *KVServer) waitApply() {
 	}
 }
 
-//must have outer lock!
+// must have outer lock!
 func (kv *KVServer) saveSnapshot(index int) {
 	//save snapshot only when raftstate size exceeds
 	//Start(cmd) -> apply -> raftstate size grows -> (if exceeds) save snapshot
@@ -298,7 +293,7 @@ func (kv *KVServer) saveSnapshot(index int) {
 	}
 }
 
-//must have outer lock!
+// must have outer lock!
 func (kv *KVServer) getSnapshotData() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
@@ -308,7 +303,7 @@ func (kv *KVServer) getSnapshotData() []byte {
 	return data
 }
 
-//may be called by other modules
+// may be called by other modules
 func (kv *KVServer) readSnapshot(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
@@ -327,7 +322,6 @@ func (kv *KVServer) readSnapshot(data []byte) {
 	}
 }
 
-//
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant key/value service.
@@ -340,7 +334,6 @@ func (kv *KVServer) readSnapshot(data []byte) {
 // you don't need to snapshot.
 // StartKVServer() must return quickly, so it should start goroutines
 // for any long-running work.
-//
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.

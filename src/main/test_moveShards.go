@@ -5,7 +5,7 @@ import (
 	"sort"
 )
 
-func moveShards(shards []int, groupList []int, targetGroupSizes []int) []int {
+func (sm *ShardMaster) moveShards(shards []int, groupList []int, targetGroupSizes []int) []int {
 	if len(groupList) != len(targetGroupSizes) {
 		panic("moveShards: groupList and targetGroupSizes have different lengths")
 	}
@@ -23,9 +23,9 @@ func moveShards(shards []int, groupList []int, targetGroupSizes []int) []int {
 		}
 	}
 
-	// Sort the groupList and targetGroupSizes based on group sizes in descending order
+	// Sort the groupList and targetGroupSizes based on old group sizes in descending order
 	sort.SliceStable(groupList, func(i, j int) bool {
-		return targetGroupSizes[i] > targetGroupSizes[j]
+		return groupToShardCount[groupList[i]] > groupToShardCount[groupList[j]]
 	})
 
 	// Assign shards to groups in order to minimize movements
@@ -74,10 +74,10 @@ func moveShards(shards []int, groupList []int, targetGroupSizes []int) []int {
 		}
 	}
 
-	return newShards
-}
-
 func main() {
-	fmt.Println(moveShards([]int{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, []int{1}, []int{10})) // Example 1
+	fmt.Println(moveShards(
+		[]int{1000, 1001, 1003, 1004, 1005, 1006, 1008, 1009, 1009, 2008},
+		[]int{1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009},
+		[]int{1, 1, 1, 1, 1, 1, 1, 1, 1, 1})) // Example 1
 	// sfmt.Println(moveShards([]int{9, 9, 17}, []int{10}, []int{3}))      // Example 2
 }

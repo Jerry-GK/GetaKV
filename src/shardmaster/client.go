@@ -4,14 +4,21 @@ package shardmaster
 // Shardmaster clerk.
 //
 
-import "../labrpc"
-import "time"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
+	"time"
+
+	"../labrpc"
+	"../labutil"
+)
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
+	leaderId  int
+	clientId  TypeClientId
+	nextMsgId ClerkMsgId
 }
 
 func nrand() int64 {
@@ -25,13 +32,25 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// Your code here.
+	if len(servers) == 0 {
+		labutil.PrintException("MakeClerk: No servers")
+		labutil.PanicSystem()
+		return nil
+	}
+	ck.leaderId = 0
+	ck.clientId = TypeClientId(nrand()) //assume no duplicate
+	ck.nextMsgId = 0
 	return ck
 }
 
+func (ck *Clerk) getNextMsgId() ClerkMsgId {
+	return ck.nextMsgId + 1
+}
+
 func (ck *Clerk) Query(num int) Config {
-	args := &QueryArgs{}
-	// Your code here.
-	args.Num = num
+	ck.nextMsgId = ck.getNextMsgId()
+	args := &QueryArgs{num, ck.clientId, ck.nextMsgId}
+
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -46,9 +65,8 @@ func (ck *Clerk) Query(num int) Config {
 }
 
 func (ck *Clerk) Join(servers map[int][]string) {
-	args := &JoinArgs{}
-	// Your code here.
-	args.Servers = servers
+	ck.nextMsgId = ck.getNextMsgId()
+	args := &JoinArgs{servers, ck.clientId, ck.nextMsgId}
 
 	for {
 		// try each known server.
@@ -64,9 +82,8 @@ func (ck *Clerk) Join(servers map[int][]string) {
 }
 
 func (ck *Clerk) Leave(gids []int) {
-	args := &LeaveArgs{}
-	// Your code here.
-	args.GIDs = gids
+	ck.nextMsgId = ck.getNextMsgId()
+	args := &LeaveArgs{gids, ck.clientId, ck.nextMsgId}
 
 	for {
 		// try each known server.
@@ -82,10 +99,8 @@ func (ck *Clerk) Leave(gids []int) {
 }
 
 func (ck *Clerk) Move(shard int, gid int) {
-	args := &MoveArgs{}
-	// Your code here.
-	args.Shard = shard
-	args.GID = gid
+	ck.nextMsgId = ck.getNextMsgId()
+	args := &MoveArgs{shard, gid, ck.clientId, ck.nextMsgId}
 
 	for {
 		// try each known server.

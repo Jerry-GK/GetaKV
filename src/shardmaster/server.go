@@ -3,11 +3,16 @@ package shardmaster
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"../labgob"
 	"../labrpc"
+	"../labutil"
 	"../raft"
 )
+
+const WaitOpTimeOut = time.Millisecond * 500
 
 type ShardMaster struct {
 	mu      sync.Mutex
@@ -15,120 +20,174 @@ type ShardMaster struct {
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
 
-	// Your data here.
+	stopCh   chan struct{}
+	outPutCh map[TypeOpId]chan ExeResult
+	dead     int32 // set by Kill()
+	nextOpId TypeOpId
 
-	configs []Config // indexed by config num
+	configs        []Config                    // indexed by config num
+	lastApplyMsgId map[TypeClientId]ClerkMsgId //avoid duplicate apply
+}
+
+const (
+	JOIN  = "Join"
+	LEAVE = "Leave"
+	MOVE  = "Move"
+	QUERY = "Query"
+)
+
+type ExeResult struct {
+	Config Config
+	Err    Err
 }
 
 type Op struct {
 	// Your data here.
+	Method    Method
+	JoinArgs  JoinArgs
+	LeaveArgs LeaveArgs
+	MoveArgs  MoveArgs
+	QueryArgs QueryArgs
+
+	ClientId TypeClientId
+	MsgId    ClerkMsgId
+
+	// ServerId + OpId is unique for each op
+	ServerId int
+	OpId     TypeOpId
 }
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 	sm.lock()
-	defer sm.unlock()
 
-	oldConfig := sm.configs[len(sm.configs)-1]
-	// copy old config
-	newConfig := Config{}
-	newConfig.Num = len(sm.configs)
-	newConfig.Groups = map[int][]string{}
-	for gid, servers := range oldConfig.Groups {
-		newConfig.Groups[gid] = servers
+	_, isLeader := sm.rf.GetState()
+	if !isLeader {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		sm.unlock()
+		return
 	}
+
+	sm.nextOpId = sm.getNextOpId()
+	// copy join args
+	joinArgs := JoinArgs{}
+	joinArgs.Servers = make(map[int][]string)
 	for gid, servers := range args.Servers {
-		newConfig.Groups[gid] = servers
+		joinArgs.Servers[gid] = servers
 	}
-
-	targetGroupSizes := distributeEvenly(NShards, len(newConfig.Groups))
-	groupList := make([]int, 0, len(newConfig.Groups))
-	for gid := range newConfig.Groups {
-		groupList = append(groupList, gid)
+	joinArgs.ClientId = args.ClientId
+	joinArgs.MsgId = args.MsgId
+	op := Op{
+		Method:    JOIN,
+		JoinArgs:  joinArgs,
+		LeaveArgs: LeaveArgs{},
+		MoveArgs:  MoveArgs{},
+		QueryArgs: QueryArgs{},
+		ClientId:  args.ClientId,
+		MsgId:     args.MsgId,
+		ServerId:  sm.me,
+		OpId:      sm.nextOpId,
 	}
+	sm.unlock()
 
-	newShardsArray := moveShards(oldConfig.Shards[:], groupList, targetGroupSizes)
-	copy(newConfig.Shards[:], newShardsArray[:])
-
-	sm.configs = append(sm.configs, newConfig)
-
+	res := sm.waitOp(op)
 	reply.WrongLeader = false
+	reply.Err = res.Err
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
 	sm.lock()
-	defer sm.unlock()
 
-	oldConfig := sm.configs[len(sm.configs)-1]
-	// copy old config
-	newConfig := Config{}
-	newConfig.Num = len(sm.configs)
-	newConfig.Groups = map[int][]string{}
-	for gid, servers := range oldConfig.Groups {
-		newConfig.Groups[gid] = servers
-	}
-	for _, gid := range args.GIDs {
-		delete(newConfig.Groups, gid)
+	_, isLeader := sm.rf.GetState()
+	if !isLeader {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		sm.unlock()
+		return
 	}
 
-	if len(newConfig.Groups) == 0 {
-		newConfig.Shards = [NShards]int{InvalidGID}
-	} else {
-		targetGroupSizes := distributeEvenly(NShards, len(newConfig.Groups))
-		groupList := make([]int, 0, len(newConfig.Groups))
-		for gid := range newConfig.Groups {
-			groupList = append(groupList, gid)
-		}
-
-		newShardsArray := moveShards(oldConfig.Shards[:], groupList, targetGroupSizes)
-		copy(newConfig.Shards[:], newShardsArray[:])
+	sm.nextOpId = sm.getNextOpId()
+	op := Op{
+		Method:    LEAVE,
+		JoinArgs:  JoinArgs{},
+		LeaveArgs: LeaveArgs{args.GIDs, args.ClientId, args.MsgId},
+		MoveArgs:  MoveArgs{},
+		QueryArgs: QueryArgs{},
+		ClientId:  args.ClientId,
+		MsgId:     args.MsgId,
+		ServerId:  sm.me,
+		OpId:      sm.nextOpId,
 	}
+	sm.unlock()
 
-	sm.configs = append(sm.configs, newConfig)
-
+	res := sm.waitOp(op)
 	reply.WrongLeader = false
+	reply.Err = res.Err
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
 	sm.lock()
-	defer sm.unlock()
 
-	oldConfig := sm.configs[len(sm.configs)-1]
-	// copy old config
-	newConfig := Config{}
-	newConfig.Num = len(sm.configs)
-	newConfig.Groups = map[int][]string{}
-	for gid, servers := range oldConfig.Groups {
-		newConfig.Groups[gid] = servers
+	_, isLeader := sm.rf.GetState()
+	if !isLeader {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		sm.unlock()
+		return
 	}
 
-	for i := 0; i < NShards; i++ {
-		if oldConfig.Shards[i] == args.Shard {
-			newConfig.Shards[i] = args.GID
-		} else {
-			newConfig.Shards[i] = oldConfig.Shards[i]
-		}
+	sm.nextOpId = sm.getNextOpId()
+	op := Op{
+		Method:    MOVE,
+		JoinArgs:  JoinArgs{},
+		LeaveArgs: LeaveArgs{},
+		MoveArgs:  MoveArgs{args.Shard, args.GID, args.ClientId, args.MsgId},
+		QueryArgs: QueryArgs{},
+		ClientId:  args.ClientId,
+		MsgId:     args.MsgId,
+		ServerId:  sm.me,
+		OpId:      sm.nextOpId,
 	}
+	sm.unlock()
 
-	sm.configs = append(sm.configs, newConfig)
-
+	res := sm.waitOp(op)
 	reply.WrongLeader = false
+	reply.Err = res.Err
 }
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
 	sm.lock()
-	defer sm.unlock()
 
-	if args.Num == -1 || args.Num >= len(sm.configs) {
-		reply.Config = sm.configs[len(sm.configs)-1]
-	} else {
-		reply.Config = sm.configs[args.Num]
+	_, isLeader := sm.rf.GetState()
+	if !isLeader {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		sm.unlock()
+		return
 	}
 
+	sm.nextOpId = sm.getNextOpId()
+	op := Op{
+		Method:    QUERY,
+		JoinArgs:  JoinArgs{},
+		LeaveArgs: LeaveArgs{},
+		MoveArgs:  MoveArgs{},
+		QueryArgs: QueryArgs{args.Num, args.ClientId, args.MsgId},
+		ClientId:  args.ClientId,
+		MsgId:     args.MsgId,
+		ServerId:  sm.me,
+		OpId:      sm.nextOpId,
+	}
+	sm.unlock()
+
+	res := sm.waitOp(op)
+	reply.Err = res.Err
 	reply.WrongLeader = false
+	reply.Config = res.Config
 }
 
 // the tester calls Kill() when a ShardMaster instance won't
@@ -138,8 +197,9 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
 func (sm *ShardMaster) Kill() {
 	sm.lock()
 	defer sm.unlock()
+	atomic.StoreInt32(&sm.dead, 1)
 	sm.rf.Kill()
-	// Your code here, if desired.
+	close(sm.stopCh)
 }
 
 // needed by shardkv tester
@@ -159,14 +219,21 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 
 	sm.configs = make([]Config, 1)
 	sm.configs[0].Groups = map[int][]string{}
+	sm.nextOpId = 0
 
 	labgob.Register(Op{})
 	sm.applyCh = make(chan raft.ApplyMsg)
+	sm.lastApplyMsgId = make(map[TypeClientId]ClerkMsgId)
 	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
 
 	// Your code here.
+	sm.stopCh = make(chan struct{})
+	sm.outPutCh = make(map[TypeOpId]chan ExeResult)
+
 	sm.configs[0].Num = InvalidConfigNum
 	sm.configs[0].Shards = [NShards]int{InvalidGID}
+
+	go sm.waitApply()
 
 	return sm
 }
@@ -180,7 +247,7 @@ func (sm *ShardMaster) unlock() {
 }
 
 // example: distributeEvenly(10, 4) -> [3, 3, 2, 2]
-func distributeEvenly(N int, m int) []int {
+func (sm *ShardMaster) distributeEvenly(N int, m int) []int {
 	base := N / m
 	remainder := N % m
 
@@ -197,7 +264,7 @@ func distributeEvenly(N int, m int) []int {
 	return result
 }
 
-func moveShards(shards []int, groupList []int, targetGroupSizes []int) []int {
+func (sm *ShardMaster) moveShards(shards []int, groupList []int, targetGroupSizes []int) []int {
 	if len(groupList) != len(targetGroupSizes) {
 		panic("moveShards: groupList and targetGroupSizes have different lengths")
 	}
@@ -215,9 +282,9 @@ func moveShards(shards []int, groupList []int, targetGroupSizes []int) []int {
 		}
 	}
 
-	// Sort the groupList and targetGroupSizes based on group sizes in descending order
+	// Sort the groupList and targetGroupSizes based on old group sizes in descending order
 	sort.SliceStable(groupList, func(i, j int) bool {
-		return targetGroupSizes[i] > targetGroupSizes[j]
+		return groupToShardCount[groupList[i]] > groupToShardCount[groupList[j]]
 	})
 
 	// Assign shards to groups in order to minimize movements
@@ -267,4 +334,169 @@ func moveShards(shards []int, groupList []int, targetGroupSizes []int) []int {
 	}
 
 	return newShards
+}
+
+func (sm *ShardMaster) getNextOpId() TypeOpId {
+	//return sm.nextOpId + 1
+	return TypeOpId(nrand()) //assume to be unique
+}
+
+func (sm *ShardMaster) deleteOutputCh(opId TypeOpId) {
+	delete(sm.outPutCh, opId)
+}
+
+func (sm *ShardMaster) waitOp(op Op) (res ExeResult) {
+	_, _, isLeader := sm.rf.Start(op)
+	if !isLeader {
+		res.Err = ErrWrongLeader
+		return
+	}
+
+	waitOpTimer := time.NewTimer(WaitOpTimeOut)
+
+	ch := make(chan ExeResult, 1) //ch will be deleted if it receives the result from Raft module as a leader, or timeout
+
+	sm.lock()
+	sm.outPutCh[op.OpId] = ch
+	sm.unlock()
+
+	for {
+		select {
+		case res_ := <-ch:
+			res.Err = res_.Err
+			res.Config = res_.Config
+			sm.lock()
+			sm.deleteOutputCh(op.OpId)
+			sm.unlock()
+			return
+		case <-waitOpTimer.C:
+			res.Err = ErrTimeout
+			sm.lock()
+			sm.deleteOutputCh(op.OpId)
+			sm.unlock()
+			return
+		}
+	}
+}
+
+func (sm *ShardMaster) waitApply() {
+	for {
+		select {
+		case <-sm.stopCh:
+			return
+		case msg := <-sm.applyCh:
+			if !msg.CommandValid {
+				continue
+			}
+
+			op := msg.Command.(Op)
+			ExeResult := ExeResult{Err: OK}
+
+			sm.lock()
+
+			lastMsgId, ok := sm.lastApplyMsgId[op.ClientId]
+			isApplied := ok && lastMsgId >= op.MsgId
+
+			switch op.Method {
+			case JOIN:
+				if !isApplied {
+					oldConfig := sm.configs[len(sm.configs)-1]
+					// copy old config
+					newConfig := Config{}
+					newConfig.Num = len(sm.configs)
+					newConfig.Groups = map[int][]string{}
+					for gid, servers := range oldConfig.Groups {
+						newConfig.Groups[gid] = servers
+					}
+					for gid, servers := range op.JoinArgs.Servers {
+						newConfig.Groups[gid] = servers
+					}
+
+					if len(newConfig.Groups) == 0 {
+						labutil.PrintWarning("No group in new config after join")
+						newConfig.Shards = [NShards]int{InvalidGID}
+					} else {
+						targetGroupSizes := sm.distributeEvenly(NShards, len(newConfig.Groups))
+						groupList := make([]int, 0, len(newConfig.Groups))
+						for gid := range newConfig.Groups {
+							groupList = append(groupList, gid)
+						}
+
+						newShardsArray := sm.moveShards(oldConfig.Shards[:], groupList, targetGroupSizes)
+						copy(newConfig.Shards[:], newShardsArray[:])
+					}
+					sm.configs = append(sm.configs, newConfig)
+
+					sm.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
+			case LEAVE:
+				if !isApplied {
+					oldConfig := sm.configs[len(sm.configs)-1]
+					// copy old config
+					newConfig := Config{}
+					newConfig.Num = len(sm.configs)
+					newConfig.Groups = map[int][]string{}
+					for gid, servers := range oldConfig.Groups {
+						newConfig.Groups[gid] = servers
+					}
+					for _, gid := range op.LeaveArgs.GIDs {
+						delete(newConfig.Groups, gid)
+					}
+
+					if len(newConfig.Groups) == 0 {
+						newConfig.Shards = [NShards]int{InvalidGID}
+					} else {
+						targetGroupSizes := sm.distributeEvenly(NShards, len(newConfig.Groups))
+						groupList := make([]int, 0, len(newConfig.Groups))
+						for gid := range newConfig.Groups {
+							groupList = append(groupList, gid)
+						}
+
+						newShardsArray := sm.moveShards(oldConfig.Shards[:], groupList, targetGroupSizes)
+						copy(newConfig.Shards[:], newShardsArray[:])
+					}
+					sm.configs = append(sm.configs, newConfig)
+
+					sm.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
+			case MOVE:
+				if !isApplied {
+					oldConfig := sm.configs[len(sm.configs)-1]
+					// copy old config
+					newConfig := Config{}
+					newConfig.Num = len(sm.configs)
+					newConfig.Groups = map[int][]string{}
+					for gid, servers := range oldConfig.Groups {
+						newConfig.Groups[gid] = servers
+					}
+
+					for i := 0; i < NShards; i++ {
+						if oldConfig.Shards[i] == op.MoveArgs.Shard {
+							newConfig.Shards[i] = op.MoveArgs.GID
+						} else {
+							newConfig.Shards[i] = oldConfig.Shards[i]
+						}
+					}
+					sm.configs = append(sm.configs, newConfig)
+
+					sm.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
+			case QUERY:
+				if op.QueryArgs.Num == -1 || op.QueryArgs.Num >= len(sm.configs) {
+					ExeResult.Config = sm.configs[len(sm.configs)-1]
+				} else {
+					ExeResult.Config = sm.configs[op.QueryArgs.Num]
+				}
+				if !isApplied {
+					sm.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
+			}
+
+			ch, ok := sm.outPutCh[op.OpId]
+			if ok && op.ServerId == sm.me {
+				ch <- ExeResult
+			}
+			sm.unlock()
+		}
+	}
 }

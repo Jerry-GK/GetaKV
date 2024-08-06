@@ -37,3 +37,8 @@
   - Pass all tests, with potential bugs
 - **[23-4-21]  Add single node KV and parser**
 - **[23-4-22]  Add file storage for persister**
+
+- **[24-8-6]  Lab4A: Shard Master**
+  - Reconfiguration algorithm
+  - Use raft module
+  - Pass all tests
