@@ -24,7 +24,7 @@ It is based on the labs of **[MIT-6.824](http://nil.csail.mit.edu/6.824/2020/sch
     - Add simple parser and persistent file to save.
     - More clear structure.
 
-Current progress: Lab3 finished. Single node KV Raft available. Not sharded yet.
+Latest progress: Lab4A finished. Reliable shard master.
 
 ## K/V System Architecture:
 
