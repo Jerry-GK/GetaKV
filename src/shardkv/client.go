@@ -8,17 +8,18 @@ package shardkv
 // talks to the group that holds the key's shard.
 //
 
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
-import "../shardmaster"
-import "time"
+import (
+	"crypto/rand"
+	"math/big"
+	"time"
 
-//
+	"../labrpc"
+	"../shardmaster"
+)
+
 // which shard is a key in?
 // please use this function,
 // and please do not change it.
-//
 func key2shard(key string) int {
 	shard := 0
 	if len(key) > 0 {
@@ -40,9 +41,11 @@ type Clerk struct {
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	leaderId  int
+	clientId  TypeClientId
+	nextMsgId ClerkMsgId
 }
 
-//
 // the tester calls MakeClerk.
 //
 // masters[] is needed to call shardmaster.MakeClerk().
@@ -50,23 +53,28 @@ type Clerk struct {
 // make_end(servername) turns a server name from a
 // Config.Groups[gid][i] into a labrpc.ClientEnd on which you can
 // send RPCs.
-//
 func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.leaderId = 0
+	ck.clientId = TypeClientId(nrand()) //assume no duplicate
+	ck.nextMsgId = 0
 	return ck
 }
 
-//
+func (ck *Clerk) getNextMsgId() ClerkMsgId {
+	return ck.nextMsgId + 1
+}
+
 // fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
 // You will have to modify this function.
-//
 func (ck *Clerk) Get(key string) string {
-	args := GetArgs{}
+	ck.nextMsgId = ck.getNextMsgId()
+	args := GetArgs{key, ck.clientId, ck.nextMsgId}
 	args.Key = key
 
 	for {
@@ -84,7 +92,14 @@ func (ck *Clerk) Get(key string) string {
 				if ok && (reply.Err == ErrWrongGroup) {
 					break
 				}
-				// ... not ok, or ErrWrongLeader
+				if !ok || ok && (reply.Err == ErrWrongLeader) {
+					// try next leader
+					ck.leaderId = (ck.leaderId + 1) % len(servers)
+					continue
+				}
+				if ok && (reply.Err == ErrTimeout) {
+					continue
+				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -95,16 +110,11 @@ func (ck *Clerk) Get(key string) string {
 	return ""
 }
 
-//
 // shared by Put and Append.
 // You will have to modify this function.
-//
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := PutAppendArgs{}
-	args.Key = key
-	args.Value = value
-	args.Op = op
-
+	ck.nextMsgId = ck.getNextMsgId()
+	args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId}
 
 	for {
 		shard := key2shard(key)
@@ -120,7 +130,14 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				if ok && reply.Err == ErrWrongGroup {
 					break
 				}
-				// ... not ok, or ErrWrongLeader
+				if !ok || ok && (reply.Err == ErrWrongLeader) {
+					// try next leader
+					ck.leaderId = (ck.leaderId + 1) % len(servers)
+					continue
+				}
+				if ok && (reply.Err == ErrTimeout) {
+					continue
+				}
 			}
 		}
 		time.Sleep(100 * time.Millisecond)

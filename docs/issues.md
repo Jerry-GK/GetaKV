@@ -371,6 +371,68 @@
         唯一不需要持久化的值是lastAppliedIndex，因为这个值会在发送ApplyMsg检测到异常时回复给其需要更新的最新值。当系统重启时, lastAppliedIndex是0，发现其小于lastIncludedIndex后，会发送invalid的ApplyMsg、读持久化、对lastAppliedIndex进行更新。
     
         实际中发现如果持久化lastAppliedIndex将出错，原因暂未知。
+    
+    
+    
+    ## Lab4
+    
+    ### Lab4A
+    
+    - 问题1: 如何理解shard、group、server及它们之间的关系？如何理解reconfig？
+    
+        首先group全称是replica group，replica group和server是物理概念，一个relica group是由若干个server（三个以上，通常是奇数个）组成的raft集群，来发挥某一功能。shardmaster本身也是由一个raft集群组成。
+    
+        在本实验中，group指的是用来读写key-value数据对的集群。可以将若干个server分配给一个group，形成一个集群。注意对系统而言，集群内部机制和外部是隔离的，内部的若干服务器作为个体只为raft服务，而对外，集群作为一个整体提供接口。集群的数量可能会随着数据量而变化，这也是reconfiguration的必要性。
+    
+        shard（分片）是抽象的概念，表示数据在逻辑上的分组，比如同样首字母开头的key的数据为一组。分组的数量通常是固定的。
+    
+        而每个shard的数据，都需要在真实的物理机（以group形式封装）上存储，也就是需要在某个group上存储。shard的数量通常是多于集群数量的，每个group通常需要为多个shard服务。
+    
+        为了性能考虑，要尽可能充分利用每个group的资源，使得shards在group之间的分布尽量平均，在添加group和删除group时，也要重新调整分配关系。这种分配模式称为一个configuration，重新分配的过程是reconfiguration。
+    
+    - 
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 
 
 
