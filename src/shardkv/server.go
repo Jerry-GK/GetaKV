@@ -14,12 +14,18 @@ import (
 	"../shardmaster"
 )
 
-const WaitOpTimeOut = time.Millisecond * 500
+const (
+	WaitOpTimeOut         = time.Millisecond * 500
+	TryNextLeaderInterval = time.Millisecond * 20
+	ReconfigTimeOut       = time.Millisecond * 1000
+)
 
 const (
-	GET    = "Get"
-	PUT    = "Put"
-	APPEND = "Append"
+	GET          = "Get"
+	PUT          = "Put"
+	APPEND       = "Append"
+	MIGRATE      = "Migrate"
+	UPDATECONFIG = "UpdateConfig"
 )
 
 type ExeResult struct {
@@ -42,6 +48,13 @@ type Op struct {
 	// ServerId + OpId is unique for each op
 	ServerId int
 	OpId     TypeOpId
+
+	// for Migrate
+	ShardKvData map[string]string
+	ConfigNum   int
+
+	// for UpdateConfig
+	Config shardmaster.Config
 }
 
 type ShardKV struct {
@@ -61,8 +74,14 @@ type ShardKV struct {
 	stopCh         chan struct{}
 	outPutCh       map[TypeOpId]chan ExeResult
 	dead           int32                       // set by Kill()
-	lastApplyMsgId map[TypeClientId]ClerkMsgId //avoid duplicate appl
+	lastApplyMsgId map[TypeClientId]ClerkMsgId //avoid duplicate apply
 	mck            *shardmaster.Clerk
+	config         shardmaster.Config
+
+	clientId  TypeClientId
+	nextMsgId ClerkMsgId
+
+	checkReconfigTimer *time.Timer
 }
 
 func (kv *ShardKV) getNextOpId() TypeOpId {
@@ -71,19 +90,29 @@ func (kv *ShardKV) getNextOpId() TypeOpId {
 }
 
 func (kv *ShardKV) lock() {
+	// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: lock")
 	kv.mu.Lock()
 }
 
 func (kv *ShardKV) unlock() {
+	// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: unlock")
 	kv.mu.Unlock()
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
+	kv.checkReconfig()
+
 	// Your code here.
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
+		kv.unlock()
+		return
+	}
+
+	if kv.config.Shards[args.Shard] != kv.gid {
+		reply.Err = ErrWrongGroup
 		kv.unlock()
 		return
 	}
@@ -107,11 +136,19 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	kv.checkReconfig()
+
 	// Your code here.
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
+		kv.unlock()
+		return
+	}
+
+	if kv.config.Shards[args.Shard] != kv.gid {
+		reply.Err = ErrWrongGroup
 		kv.unlock()
 		return
 	}
@@ -132,6 +169,57 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	reply.Err = res.Err
 	//PutAppend does not return value
+}
+
+func (kv *ShardKV) MigrateShard(args *MigrateArgs, reply *MigrateReply) {
+	kv.lock()
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.unlock()
+		return
+	}
+
+	kv.nextOpId = kv.getNextOpId()
+	op := Op{
+		Method:      MIGRATE,
+		ClientId:    args.ClientId,
+		MsgId:       args.MsgId,
+		ServerId:    kv.me,
+		OpId:        kv.nextOpId,
+		ShardKvData: args.ShardKvData,
+		ConfigNum:   args.ConfigNum,
+	}
+	kv.unlock()
+
+	res := kv.waitOp(op)
+
+	reply.Err = res.Err
+}
+
+func (kv *ShardKV) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigReply) {
+	kv.lock()
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		kv.unlock()
+		return
+	}
+
+	kv.nextOpId = kv.getNextOpId()
+	op := Op{
+		Method:   UPDATECONFIG,
+		ClientId: args.ClientId,
+		MsgId:    args.MsgId,
+		ServerId: kv.me,
+		OpId:     kv.nextOpId,
+		Config:   args.Config,
+	}
+	kv.unlock()
+
+	res := kv.waitOp(op)
+
+	reply.Err = res.Err
 }
 
 // the tester calls Kill() when a ShardKV instance won't
@@ -243,6 +331,24 @@ func (kv *ShardKV) waitApply() {
 					kv.kvData[op.Key] += op.Value
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
+			case MIGRATE:
+				if !isApplied {
+					if kv.config.Num <= op.ConfigNum {
+						for key, value := range op.ShardKvData {
+							kv.kvData[key] = value
+						}
+					} else {
+						ExeResult.Err = ErrOutdatedConfig
+					}
+					kv.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
+			case UPDATECONFIG:
+				if !isApplied {
+					if kv.config.Num < op.Config.Num {
+						kv.config = op.Config
+					}
+					kv.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
 			default:
 				labutil.PrintException("Unknown Method")
 				labutil.PanicSystem()
@@ -275,6 +381,7 @@ func (kv *ShardKV) getSnapshotData() []byte {
 	e := labgob.NewEncoder(w)
 	e.Encode(kv.kvData)
 	e.Encode(kv.lastApplyMsgId)
+	e.Encode(kv.config)
 	data := w.Bytes()
 	return data
 }
@@ -288,13 +395,123 @@ func (kv *ShardKV) readSnapshot(data []byte) {
 	d := labgob.NewDecoder(r)
 	var kvData map[string]string
 	var lastApplyMsgId map[TypeClientId]ClerkMsgId
+	var config shardmaster.Config
 	if d.Decode(&kvData) != nil ||
-		d.Decode(&lastApplyMsgId) != nil {
+		d.Decode(&lastApplyMsgId) != nil ||
+		d.Decode(&config) != nil {
 		labutil.PrintException("KVServer[" + fmt.Sprint(kv.me) + "]: readSnapshot failed while decoding!")
 		labutil.PanicSystem()
 	} else {
 		kv.kvData = kvData
 		kv.lastApplyMsgId = lastApplyMsgId
+		kv.config = config
+		// print config
+		labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: readSnapshot, config = " + fmt.Sprint(kv.config.Num))
+	}
+}
+
+func getShardListOf(config shardmaster.Config, gid int) []int {
+	shards := make([]int, 0)
+	for shard, group := range config.Shards {
+		if group == gid {
+			shards = append(shards, shard)
+		}
+	}
+	return shards
+}
+
+func (ck *ShardKV) getNextMsgId() ClerkMsgId {
+	return ck.nextMsgId + 1
+}
+
+func (kv *ShardKV) checkReconfig() {
+	// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: checkReconfig")
+	kv.lock()
+
+	// only leader check reconfig
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		kv.unlock()
+		return
+	}
+
+	curConfig := kv.mck.Query(-1)
+	if kv.config.Num < curConfig.Num {
+		// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: Reconfig, curConfig = " + fmt.Sprint(curConfig.Num) + ", kv.config = " + fmt.Sprint(kv.config.Num))
+		oldShardList := getShardListOf(kv.config, kv.gid)
+		newShardList := getShardListOf(curConfig, kv.gid)
+		// get deletedShards and addedShards
+		migratedShards := make([]int, 0)
+		for _, shard := range oldShardList {
+			found := false
+			for _, newShard := range newShardList {
+				if shard == newShard {
+					found = true
+					break
+				}
+			}
+			if !found {
+				migratedShards = append(migratedShards, shard)
+			}
+		}
+
+		// update config
+		kv.nextMsgId = kv.getNextMsgId()
+		args := UpdateConfigArgs{Config: curConfig, ClientId: kv.clientId, MsgId: kv.nextMsgId}
+		reply := UpdateConfigReply{}
+		kv.unlock()
+		kv.UpdateConfig(&args, &reply)
+
+		// migrate migratedShards
+		if len(migratedShards) > 0 {
+			for _, shard := range migratedShards {
+				kv.callMigrateShard(shard, kv.config.Shards[shard])
+			}
+		}
+	} else {
+		kv.unlock()
+	}
+}
+
+func (kv *ShardKV) callMigrateShard(shard int, gid int) {
+	// get shard data
+	kv.lock()
+	shardKvData := make(map[string]string)
+	for key, value := range kv.kvData {
+		if key2shard(key) == shard {
+			shardKvData[key] = value
+		}
+	}
+
+	// send data to new group
+	kv.nextMsgId = kv.getNextMsgId()
+	kv.unlock()
+	args := MigrateArgs{ShardKvData: shardKvData, ConfigNum: kv.config.Num, ClientId: kv.clientId, MsgId: kv.nextMsgId}
+	for {
+		for _, server := range kv.config.Groups[gid] {
+			srv := kv.make_end(server)
+			var reply MigrateReply
+			ok := srv.Call("ShardKV.MigrateShard", &args, &reply)
+			if ok && reply.Err == OK {
+				return
+			} else if ok && reply.Err == ErrOutdatedConfig {
+				return
+			} else {
+				time.Sleep(TryNextLeaderInterval)
+			}
+		}
+	}
+}
+
+func (kv *ShardKV) periodicCheckReconfig() {
+	for {
+		select {
+		case <-kv.stopCh:
+			return
+		case <-kv.checkReconfigTimer.C:
+			kv.checkReconfig()
+			kv.checkReconfigTimer.Reset(ReconfigTimeOut)
+		}
 	}
 }
 
@@ -338,9 +555,11 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	// Your initialization code here.
 	kv.nextOpId = 0
+	kv.persister = persister
 
 	// Use something like this to talk to the shardmaster:
 	kv.mck = shardmaster.MakeClerk(kv.masters)
+	kv.config = kv.mck.Query(-1)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.stopCh = make(chan struct{})
@@ -351,9 +570,16 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+	kv.clientId = TypeClientId(nrand()) //assume no duplicate
+	kv.nextMsgId = 0
+
+	kv.checkReconfigTimer = time.NewTimer(0)
+
 	kv.readSnapshot(persister.ReadSnapshot())
 
 	go kv.waitApply()
+
+	go kv.periodicCheckReconfig()
 
 	return kv
 }

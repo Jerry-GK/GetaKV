@@ -74,8 +74,6 @@ func (ck *Clerk) getNextMsgId() ClerkMsgId {
 // You will have to modify this function.
 func (ck *Clerk) Get(key string) string {
 	ck.nextMsgId = ck.getNextMsgId()
-	args := GetArgs{key, ck.clientId, ck.nextMsgId}
-	args.Key = key
 
 	for {
 		shard := key2shard(key)
@@ -84,6 +82,7 @@ func (ck *Clerk) Get(key string) string {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
+				args := GetArgs{key, ck.clientId, ck.nextMsgId, shard, gid}
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
@@ -114,7 +113,6 @@ func (ck *Clerk) Get(key string) string {
 // You will have to modify this function.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.nextMsgId = ck.getNextMsgId()
-	args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId}
 
 	for {
 		shard := key2shard(key)
@@ -122,6 +120,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
+				args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId, shard, gid}
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {

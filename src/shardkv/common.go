@@ -1,5 +1,7 @@
 package shardkv
 
+import "../shardmaster"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -10,11 +12,12 @@ package shardkv
 //
 
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongGroup  = "ErrWrongGroup"
-	ErrWrongLeader = "ErrWrongLeader"
-	ErrTimeout     = "ErrTimeout"
+	OK                = "OK"
+	ErrNoKey          = "ErrNoKey"
+	ErrWrongGroup     = "ErrWrongGroup"
+	ErrWrongLeader    = "ErrWrongLeader"
+	ErrTimeout        = "ErrTimeout"
+	ErrOutdatedConfig = "ErrOutdatedConfig"
 )
 
 type Err string
@@ -38,6 +41,9 @@ type PutAppendArgs struct {
 	// otherwise RPC will break.
 	ClientId TypeClientId
 	MsgId    ClerkMsgId
+
+	Shard int
+	Gid   int
 }
 
 type PutAppendReply struct {
@@ -49,9 +55,33 @@ type GetArgs struct {
 	// You'll have to add definitions here.
 	ClientId TypeClientId
 	MsgId    ClerkMsgId
+
+	Shard int
+	Gid   int
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type MigrateArgs struct {
+	ShardKvData map[string]string
+	ConfigNum   int
+	ClientId    TypeClientId
+	MsgId       ClerkMsgId
+}
+
+type MigrateReply struct {
+	Err Err
+}
+
+type UpdateConfigArgs struct {
+	Config   shardmaster.Config
+	ClientId TypeClientId
+	MsgId    ClerkMsgId
+}
+
+type UpdateConfigReply struct {
+	Err Err
 }
