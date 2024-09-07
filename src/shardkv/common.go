@@ -68,6 +68,7 @@ type GetReply struct {
 type MigrateArgs struct {
 	ShardKvData map[string]string
 	ConfigNum   int
+	OldGid      int
 	ClientId    TypeClientId
 	MsgId       ClerkMsgId
 }

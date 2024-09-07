@@ -1,6 +1,7 @@
 package shardmaster
 
 import (
+	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -60,6 +61,7 @@ type Op struct {
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 	sm.lock()
+	labutil.PrintMessage(fmt.Sprintf("Join: %v", args.Servers))
 
 	_, isLeader := sm.rf.GetState()
 	if !isLeader {
@@ -99,6 +101,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
 	sm.lock()
+	labutil.PrintMessage(fmt.Sprintf("Leave: %v", args.GIDs))
 
 	_, isLeader := sm.rf.GetState()
 	if !isLeader {

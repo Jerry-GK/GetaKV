@@ -86,6 +86,7 @@ func (ck *Clerk) Get(key string) string {
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
+					// labutil.PrintMessage("Get: key = " + key + ", value = " + reply.Value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
