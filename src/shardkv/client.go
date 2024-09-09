@@ -17,6 +17,8 @@ import (
 	"../shardmaster"
 )
 
+const TryNextServerInterval = 20 * time.Millisecond
+
 // which shard is a key in?
 // please use this function,
 // and please do not change it.
@@ -102,7 +104,7 @@ func (ck *Clerk) Get(key string) string {
 				}
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(TryNextServerInterval)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
@@ -140,7 +142,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				}
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(TryNextServerInterval)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}

@@ -61,7 +61,6 @@ type Op struct {
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
 	sm.lock()
-	labutil.PrintMessage(fmt.Sprintf("Join: %v", args.Servers))
 
 	_, isLeader := sm.rf.GetState()
 	if !isLeader {
@@ -70,6 +69,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 		sm.unlock()
 		return
 	}
+	labutil.PrintMessage(fmt.Sprintf("Join: %v", args.Servers))
 
 	sm.nextOpId = sm.getNextOpId()
 	// copy join args
@@ -101,7 +101,6 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
 	sm.lock()
-	labutil.PrintMessage(fmt.Sprintf("Leave: %v", args.GIDs))
 
 	_, isLeader := sm.rf.GetState()
 	if !isLeader {
@@ -110,6 +109,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		sm.unlock()
 		return
 	}
+	labutil.PrintMessage(fmt.Sprintf("Leave: %v", args.GIDs))
 
 	sm.nextOpId = sm.getNextOpId()
 	op := Op{

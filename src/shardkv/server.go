@@ -2,6 +2,7 @@ package shardkv
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ const (
 	TryNextLeaderInterval = time.Millisecond * 20
 	ReconfigTimeOut       = time.Millisecond * 100
 	WaitMigrateTimeOut    = time.Millisecond * 100
+	QueryConfigTimeout    = time.Millisecond * 2500
 )
 
 const (
@@ -87,18 +89,26 @@ type ShardKV struct {
 	checkReconfigTimer *time.Timer
 }
 
+func (kv *ShardKV) selfString() string {
+	// Group[gid] - Server[me]
+	s := "Group[" + fmt.Sprint(kv.gid) + "] - Server[" + fmt.Sprint(kv.me) + "]: "
+	return s
+}
+
 func (kv *ShardKV) getNextOpId() TypeOpId {
 	//return kv.nextOpId + 1
 	return TypeOpId(nrand()) //assume to be unique
 }
 
 func (kv *ShardKV) lock() {
-	// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: lock")
+	// fmt.Print("               ")
+	// labutil.PrintMessage(kv.selfString() + "lock")
 	kv.mu.Lock()
 }
 
 func (kv *ShardKV) unlock() {
-	// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: unlock")
+	// fmt.Print("               ")
+	// labutil.PrintMessage(kv.selfString() + "unlock")
 	kv.mu.Unlock()
 }
 
@@ -407,7 +417,7 @@ func (kv *ShardKV) readSnapshot(data []byte) {
 		kv.kvData = kvData
 		kv.lastApplyMsgId = lastApplyMsgId
 		kv.config = config
-		// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: readSnapshot, config = " + fmt.Sprint(kv.config.Num))
+		// labutil.PrintMessage(kv.selfString() + "readSnapshot, config = " + fmt.Sprint(kv.config.Num))
 	}
 }
 
@@ -421,12 +431,33 @@ func getShardListOf(config shardmaster.Config, gid int) []int {
 	return shards
 }
 
-func (ck *ShardKV) getNextMsgId() ClerkMsgId {
-	return ck.nextMsgId + 1
+func (kv *ShardKV) getNextMsgId() ClerkMsgId {
+	return kv.nextMsgId + 1
+}
+
+// must have outer lock!
+func (kv *ShardKV) queryLatestConfig() (shardmaster.Config, bool) {
+	var config shardmaster.Config
+	ctx, cancel := context.WithTimeout(context.Background(), QueryConfigTimeout)
+	defer cancel()
+
+	done := make(chan bool, 1)
+
+	go func() {
+		config = kv.mck.Query(-1)
+		done <- true
+	}()
+
+	select {
+	case <-ctx.Done():
+		return shardmaster.Config{}, true
+	case <-done:
+		return config, false
+	}
 }
 
 func (kv *ShardKV) checkReconfig() {
-	// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: checkReconfig")
+	// labutil.PrintMessage(kv.selfString() + "checkReconfig")
 	kv.lock()
 
 	// only leader check reconfig
@@ -436,9 +467,13 @@ func (kv *ShardKV) checkReconfig() {
 		return
 	}
 
-	curConfig := kv.mck.Query(-1)
+	curConfig, timeout := kv.queryLatestConfig()
+	if timeout {
+		kv.unlock()
+		return
+	}
+
 	if kv.config.Num < curConfig.Num {
-		// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: Reconfig, curConfig = " + fmt.Sprint(curConfig.Num) + ", kv.config = " + fmt.Sprint(kv.config.Num))
 		oldShardList := getShardListOf(kv.config, kv.gid)
 		newShardList := getShardListOf(curConfig, kv.gid)
 		// get deletedShards and addedShards
@@ -467,7 +502,7 @@ func (kv *ShardKV) checkReconfig() {
 		// migrate migratedShards to other groups
 		if len(migratedShards) > 0 {
 			for _, shard := range migratedShards {
-				// labutil.PrintMessage("Server[" + fmt.Sprint(kv.me) + "]: Migrate shard = " + fmt.Sprint(shard) + " from gid = " + fmt.Sprint(oldConfig.Shards[shard]) + " to gid = " + fmt.Sprint(curConfig.Shards[shard]))
+				// labutil.PrintMessage(kv.selfString() + ": Migrate shard = " + fmt.Sprint(shard) + " from gid = " + fmt.Sprint(oldConfig.Shards[shard]) + " to gid = " + fmt.Sprint(curConfig.Shards[shard]))
 				kv.callMigrateShard(shard, kv.config.Shards[shard], oldConfig.Shards[shard])
 			}
 		}

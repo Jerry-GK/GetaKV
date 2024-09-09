@@ -13,6 +13,8 @@ import (
 	"../labutil"
 )
 
+const TryNextServerInterval = 20 * time.Millisecond
+
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
@@ -60,7 +62,7 @@ func (ck *Clerk) Query(num int) Config {
 				return reply.Config
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(TryNextServerInterval)
 	}
 }
 
@@ -77,7 +79,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 				return
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(TryNextServerInterval)
 	}
 }
 
@@ -94,7 +96,7 @@ func (ck *Clerk) Leave(gids []int) {
 				return
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(TryNextServerInterval)
 	}
 }
 
@@ -111,6 +113,6 @@ func (ck *Clerk) Move(shard int, gid int) {
 				return
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(TryNextServerInterval)
 	}
 }

@@ -390,7 +390,19 @@
     
         为了性能考虑，要尽可能充分利用每个group的资源，使得shards在group之间的分布尽量平均，在添加group和删除group时，也要重新调整分配关系。这种分配模式称为一个configuration，重新分配的过程是reconfiguration。
     
-    - 
+    - 问题2: 发生reconfig，需要迁移分片（migrate shards）时，是用RPC将shard发送到目标group中，还是用RPC向源server发送迁移请求、在reply中获取？
+    
+        理论上都可以，后者（请求法）在实现上更方便一些，只需请求所有数据完成即可完成自身的reconfig。
+    
+        前者（发送法）也可以，但需要注意在reconfig时，需要等待所有其他group中，现在应该属于自己的分片被迁移过来，才算完成reconfig、才能继续提供kv服务。所以需要在server状态中维护关于configNum和shard分配状态的信息，记录是否已经将属于自己的shard同步完成。
+    
+        本实验采用的是发送法。
+    
+    - 问题3: 在kill group阶段，系统卡住是什么原因
+    
+        本实验中出现这个原因是因为在check reconfig中从shard master的query并没有超时检测，导致当关闭组内部分server后，剩下的server在此处可能会无限尝试，导致锁无法释放。
+    
+        加上超时检测即可。
     
     
     
