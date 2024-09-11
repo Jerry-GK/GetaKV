@@ -404,6 +404,14 @@
     
         加上超时检测即可。
     
+    - 问题4: 为什么一定要按顺序每次只处理一次config变更？怎样做到？
+    
+        事实上，处理config变更时，需要利用到上一个旧的config的信息，来获取旧的分组等相关信息，来做shard迁移等工作。如果跳过几个config版本直接更新，那么只能用隔几代版本的旧的config了，但该config的版本未必与其他group中config的版本一致，获取到的分片信息可能是对不上的，自然也就无法正确migrate shards。
+    
+        比如group 1错过了5次config更新，而group 2只错过了3次，如果group 1在更新时用的是5次前的config版本，获取这个config中来自group 2中的shard，那么group 2中这些数据可能压根就不存在。
+    
+        要做到按顺序依此处理变更，需要在check reconfig的过程中先看是否是最新config，如果不是，利用shard master按照Num查找指定版本config的功能，获取当前config版本的下一个版本的config，来做更新。另外，要保证所有group的更新是按config版本一体化递增的，不能出现其中一个group连续更新、领先其他group好几个版本的情况，否则可能导致分片迁移顺序颠倒、得不到正确数据。
+    
     
     
     

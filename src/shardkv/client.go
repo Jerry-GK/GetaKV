@@ -17,8 +17,6 @@ import (
 	"../shardmaster"
 )
 
-const TryNextServerInterval = 20 * time.Millisecond
-
 // which shard is a key in?
 // please use this function,
 // and please do not change it.
@@ -84,7 +82,7 @@ func (ck *Clerk) Get(key string) string {
 			// try each server for the shard.
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
-				args := GetArgs{key, ck.clientId, ck.nextMsgId, shard, gid}
+				args := GetArgs{key, ck.clientId, ck.nextMsgId, shard}
 				var reply GetReply
 				ok := srv.Call("ShardKV.Get", &args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
@@ -92,19 +90,21 @@ func (ck *Clerk) Get(key string) string {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
+					time.Sleep(WaitForConfigConsistentTimeOut)
 					break
 				}
 				if !ok || ok && (reply.Err == ErrWrongLeader) {
 					// try next leader
 					ck.leaderId = (ck.leaderId + 1) % len(servers)
+					time.Sleep(TryNextGroupServerInterval)
 					continue
 				}
 				if ok && (reply.Err == ErrTimeout) {
+					time.Sleep(TryNextGroupServerInterval)
 					continue
 				}
 			}
 		}
-		time.Sleep(TryNextServerInterval)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}
@@ -123,26 +123,29 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		if servers, ok := ck.config.Groups[gid]; ok {
 			for si := 0; si < len(servers); si++ {
 				srv := ck.make_end(servers[si])
-				args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId, shard, gid}
+				args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId, shard}
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
+					// labutil.PrintMessage(args.Op + ": key = " + key + ", value = " + value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
+					time.Sleep(WaitForConfigConsistentTimeOut)
 					break
 				}
 				if !ok || ok && (reply.Err == ErrWrongLeader) {
 					// try next leader
 					ck.leaderId = (ck.leaderId + 1) % len(servers)
+					time.Sleep(TryNextGroupServerInterval)
 					continue
 				}
 				if ok && (reply.Err == ErrTimeout) {
+					time.Sleep(TryNextGroupServerInterval)
 					continue
 				}
 			}
 		}
-		time.Sleep(TryNextServerInterval)
 		// ask master for the latest configuration.
 		ck.config = ck.sm.Query(-1)
 	}

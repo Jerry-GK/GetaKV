@@ -1,6 +1,10 @@
 package shardkv
 
-import "../shardmaster"
+import (
+	"time"
+
+	"../shardmaster"
+)
 
 //
 // Sharded key/value server.
@@ -17,7 +21,12 @@ const (
 	ErrWrongGroup     = "ErrWrongGroup"
 	ErrWrongLeader    = "ErrWrongLeader"
 	ErrTimeout        = "ErrTimeout"
-	ErrOutdatedConfig = "ErrOutdatedConfig"
+	ErrConfigNotMatch = "ErrConfigNotMatch"
+)
+
+const (
+	WaitForConfigConsistentTimeOut = time.Millisecond * 100
+	TryNextGroupServerInterval     = time.Millisecond * 20
 )
 
 type Err string
@@ -43,7 +52,6 @@ type PutAppendArgs struct {
 	MsgId    ClerkMsgId
 
 	Shard int
-	Gid   int
 }
 
 type PutAppendReply struct {
@@ -57,7 +65,6 @@ type GetArgs struct {
 	MsgId    ClerkMsgId
 
 	Shard int
-	Gid   int
 }
 
 type GetReply struct {
@@ -68,7 +75,8 @@ type GetReply struct {
 type MigrateArgs struct {
 	ShardKvData map[string]string
 	ConfigNum   int
-	OldGid      int
+	FromGid     int
+	IsNewGroup  bool
 	ClientId    TypeClientId
 	MsgId       ClerkMsgId
 }
