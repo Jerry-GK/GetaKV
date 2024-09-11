@@ -412,7 +412,49 @@
     
         要做到按顺序依此处理变更，需要在check reconfig的过程中先看是否是最新config，如果不是，利用shard master按照Num查找指定版本config的功能，获取当前config版本的下一个版本的config，来做更新。另外，要保证所有group的更新是按config版本一体化递增的，不能出现其中一个group连续更新、领先其他group好几个版本的情况，否则可能导致分片迁移顺序颠倒、得不到正确数据。
     
+    - 问题5: 如何做到一次处理一个config变更，让不同group之间保持一致？
     
+        这是非常重要的问题，是shardkv系统设计的核心之一。考虑到一次check reconfig过程中发现需要更新一次config (**curConfig --> nextConfig**)版本，有三个步骤：
+    
+        **Migrate Shards --> Wait for Receive All Shards --> Update Config**
+    
+        同时在任何时刻，shard kv server都在接受可能来自其他shard kv server的migrate shards请求，称为MigrateShards RPC。
+    
+        **Migrate Shards**是发送shard的过程，由当前group发出， 发送内容是curConfig下属于该group、但在nextConfig中归属于其他group的shard，这部份shard由一个简单的逻辑计算得出。接受方是这些shard在nextConfig下所属的group。这个过程通过RPC请求完成，可能一次性向多个group发送请求。注意服务器并不等待Migrate Shards的RPC接收到成功的信号，只负责发送。
+    
+        **MigrateShards RPC**: MigrateShards RPC接收时，会更新自身维护的一个map：receiveConfigNum。这是一个从gid到configNum的映射，表示收到的来自gid的最大configNum。其中configNum来自Migrate Shards中的RPC，发送的是nextConfig的configNum。也就是说**正常情况下，接受方的configNum应该刚好比RPC参数中的configNum小1，在这种情况下，认为migrate成功，将对应shard的数据迁移过去，并且更新receiveConfigNum。如果不是这种情况，通常是configNum不止小1，则该RPC接收无效（超前检查，RPC超前，接收方还未将config版本同步到与发送方相同），这种情况将会不断重试，直到接受方与发送方config版本相同才能成功、继续推进。**这是保证config版本逐个推进的重要措施。
+    
+        **Wait for Receive All Shards**是保证当前group已拥有所有nextConfig下属于自己的shard的过程。当receiveConfigNum中，所有gid对应的configNum都等于nextConfig的configNum时，说明它已经接收到所有属于自己的shard，那么已经可以正常提供新版本下的kv服务了，可以进入到Update Config环节。否则，等待receiveConfigNum全部最新。
+    
+        还有一个重要问题是关于新增组和删除组的：
+    
+        在一次reconfig过程中，有如下group的集合：
+    
+        curGroupList：curConfig下的group集合。
+    
+        nextGroupList：nextConfig下的group集合。
+    
+        allGroupList：curGroupList和nextGroupList的合集。
+    
+        addedGroupList：nextGroupList和curGroupList的差集，即新join进来的组。
+    
+        leftGroupList：curGroupList和nextGroupList的差集，即leave出去的组。
+    
+        outsideGroupList：allGroupList以外的组。在新旧config下都不涉及，可能是早就被leave掉但仍然在运行、检查reconfig的组，在以后可能会被加进来。
+    
+        关于这些组，有一些说明：
+    
+        - Migrate Shards的发送方是allGroupList，接受方也是allGroupList。需要注意的是如果接受方属于addedGroupList，那么MigrateShards RPC请求的参数isNewGroup将为true，此时接受方将知道它是新加进来的组，此时不需要进行超前检查（待确认）。
+    
+            Migrate Shards发送的shards可能是空的，此时该RPC仍起到同步Migrate Shards的config版本的作用，不能不发。
+    
+        - Wait for Receive All Shards的主体是allGroupList，所等待的组也是allGroupList。这与上面对应。
+    
+        - 在Update Config时，需要把receiveConfigNum中gid属于leftGroupList的给删掉。
+    
+        - outsideGroupList中的group，不进行Migrate Shards和Wait for Receive All Shards，直接Update Config即可。
+    
+            所以注意，这些group可能出现超前现象：在allGroupList中的组还在维持一致、逐个推进config版本时，这些“局外组”可能早已直接连续更新到了最新的config。这其实不影响整体一致性，如果他们在后面join了进来，那个时候是不可能超前的。如果非要在“局外”状态时仍强行维护其config版本与allGroupList的一致性，可能需要一个全局的历史组合集，并且会导致一些不必要的维护开销。
     
     
     
