@@ -11,11 +11,9 @@ package shardkv
 import (
 	"crypto/rand"
 	"math/big"
-	"strconv"
 	"time"
 
 	"../labrpc"
-	"../labutil"
 	"../shardmaster"
 )
 
@@ -80,38 +78,38 @@ func (ck *Clerk) Get(key string) string {
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
-			// try each server for the shard.
-			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
-				args := GetArgs{key, ck.clientId, ck.nextMsgId, shard}
-				var reply GetReply
-				ok := srv.Call("ShardKV.Get", &args, &reply)
-				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-					// labutil.PrintMessage("Get: key = " + key + ", value = " + reply.Value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
-					return reply.Value
-				}
-				if ok && (reply.Err == ErrWrongGroup) {
-					time.Sleep(WaitForConfigConsistentTimeOut)
-					break
-				}
-				if !ok || ok && (reply.Err == ErrWrongLeader) {
-					// try next leader
-					ck.leaderId = (ck.leaderId + 1) % len(servers)
-					time.Sleep(TryNextGroupServerInterval)
-					continue
-				}
-				if ok && (reply.Err == ErrTimeout) {
-					time.Sleep(TryNextGroupServerInterval)
-					continue
-				}
+		servers, ok := ck.config.Groups[gid]
+		if ok {
+			srv := ck.make_end(servers[ck.leaderId])
+			args := GetArgs{key, ck.clientId, ck.nextMsgId, shard}
+			var reply GetReply
+			ok := srv.Call("ShardKV.Get", &args, &reply)
+			if !ok {
+				ck.leaderId = (ck.leaderId + 1) % len(servers)
+				time.Sleep(TryNextGroupServerInterval)
+				continue
 			}
-		}
-		// ask master for the latest configuration.
-		ck.config = ck.sm.Query(-1)
-	}
 
-	return ""
+			switch reply.Err {
+			case OK, ErrNoKey:
+				// labutil.PrintMessage("GET" + ": key = " + key + ", value = " + value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
+				return reply.Value
+			case ErrWrongGroup:
+				time.Sleep(WaitForConfigConsistentTimeOut)
+				ck.config = ck.sm.Query(-1)
+				continue
+			case ErrWrongLeader:
+				ck.leaderId = (ck.leaderId + 1) % len(servers)
+				time.Sleep(TryNextGroupServerInterval)
+				continue
+			case ErrTimeout:
+				time.Sleep(TryNextGroupServerInterval)
+				continue
+			}
+		} else {
+			ck.config = ck.sm.Query(-1)
+		}
+	}
 }
 
 // shared by Put and Append.
@@ -122,34 +120,37 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	for {
 		shard := key2shard(key)
 		gid := ck.config.Shards[shard]
-		if servers, ok := ck.config.Groups[gid]; ok {
-			for si := 0; si < len(servers); si++ {
-				srv := ck.make_end(servers[si])
-				args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId, shard}
-				var reply PutAppendReply
-				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
-				if ok && reply.Err == OK {
-					labutil.PrintMessage(args.Op + ": key = " + key + ", value = " + value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
-					return
-				}
-				if ok && reply.Err == ErrWrongGroup {
-					time.Sleep(WaitForConfigConsistentTimeOut)
-					break
-				}
-				if !ok || ok && (reply.Err == ErrWrongLeader) {
-					// try next leader
-					ck.leaderId = (ck.leaderId + 1) % len(servers)
-					time.Sleep(TryNextGroupServerInterval)
-					continue
-				}
-				if ok && (reply.Err == ErrTimeout) {
-					time.Sleep(TryNextGroupServerInterval)
-					continue
-				}
+		servers, ok := ck.config.Groups[gid]
+		if ok {
+			srv := ck.make_end(servers[ck.leaderId])
+			args := PutAppendArgs{key, value, op, ck.clientId, ck.nextMsgId, shard}
+			var reply PutAppendReply
+			ok := srv.Call("ShardKV.PutAppend", &args, &reply)
+			if !ok {
+				ck.leaderId = (ck.leaderId + 1) % len(servers)
+				time.Sleep(TryNextGroupServerInterval)
+				continue
 			}
+
+			switch reply.Err {
+			case OK:
+				// labutil.PrintMessage(args.Op + ": key = " + key + ", value = " + value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
+				return
+			case ErrWrongGroup:
+				time.Sleep(WaitForConfigConsistentTimeOut)
+				ck.config = ck.sm.Query(-1)
+				continue
+			case ErrWrongLeader:
+				ck.leaderId = (ck.leaderId + 1) % len(servers)
+				time.Sleep(TryNextGroupServerInterval)
+				continue
+			case ErrTimeout:
+				time.Sleep(TryNextGroupServerInterval)
+				continue
+			}
+		} else {
+			ck.config = ck.sm.Query(-1)
 		}
-		// ask master for the latest configuration.
-		ck.config = ck.sm.Query(-1)
 	}
 }
 

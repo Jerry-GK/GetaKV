@@ -717,27 +717,41 @@ func (kv *ShardKV) callMigrateShards(shards []int, fromGid int, toGid int, oldCo
 	// send data to new group
 	kv.nextMsgId = kv.getNextMsgId()
 	kv.unlock()
+
 	migrateShardsArgs := MigrateShardsArgs{ShardsKvData: shardsData, ConfigNum: nextConfig.Num, FromGid: fromGid, IsNewGroup: isNewGroup, ClientId: kv.clientId, MsgId: kv.nextMsgId} // curConfig.NUm = nextConfig.Num
 	allToServers := oldConfig.Groups[toGid]
 	if len(allToServers) == 0 {
 		allToServers = nextConfig.Groups[toGid]
 	}
 
+	// note: len(allToServers) must > 0
+	leaderId := 0
 	for {
-		for _, server := range allToServers {
-			srv := kv.make_end(server)
-			var migrateShardsReply MigrateShardsReply
-			ok := srv.Call("ShardKV.MigrateShards", &migrateShardsArgs, &migrateShardsReply)
-			if ok && migrateShardsReply.Err == OK {
-				return
-			} else if ok && migrateShardsReply.Err == ErrConfigNotMatch {
-				time.Sleep(WaitForConfigConsistentTimeOut)
-				break
-			} else {
-				time.Sleep(TryNextGroupServerInterval)
-				fmt.Println("net error")
-				continue
-			}
+		srv := kv.make_end(allToServers[leaderId])
+		var migrateShardsReply MigrateShardsReply
+		ok := srv.Call("ShardKV.MigrateShards", &migrateShardsArgs, &migrateShardsReply)
+		if !ok {
+			leaderId = (leaderId + 1) % len(allToServers)
+			time.Sleep(TryNextGroupServerInterval)
+			fmt.Println("net error not ok")
+			continue
+		}
+
+		switch migrateShardsReply.Err {
+		case OK:
+			return
+		case ErrConfigNotMatch:
+			time.Sleep(WaitForConfigConsistentTimeOut)
+			continue
+		case ErrWrongLeader:
+			leaderId = (leaderId + 1) % len(allToServers)
+			time.Sleep(TryNextGroupServerInterval)
+			fmt.Println("wrong leader")
+			continue
+		case ErrTimeout:
+			time.Sleep(TryNextGroupServerInterval)
+			fmt.Println("net error timeout")
+			continue
 		}
 	}
 }
