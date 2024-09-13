@@ -424,7 +424,9 @@
     
         **Migrate Shards**是发送shard的过程，由当前group发出， 发送内容是curConfig下属于该group、但在nextConfig中归属于其他group的shard，这部份shard由一个简单的逻辑计算得出。接受方是这些shard在nextConfig下所属的group。这个过程通过RPC请求完成，可能一次性向多个group发送请求。注意服务器并不等待Migrate Shards的RPC接收到成功的信号，只负责发送。
     
-        **MigrateShards RPC**: MigrateShards RPC接收时，会更新自身维护的一个map：receiveConfigNum。这是一个从gid到configNum的映射，表示收到的来自gid的最大configNum。其中configNum来自Migrate Shards中的RPC，发送的是nextConfig的configNum。也就是说**正常情况下，接受方的configNum应该刚好比RPC参数中的configNum小1，在这种情况下，认为migrate成功，将对应shard的数据迁移过去，并且更新receiveConfigNum。如果不是这种情况，通常是configNum不止小1，则该RPC接收无效（超前检查，RPC超前，接收方还未将config版本同步到与发送方相同），这种情况将会不断重试，直到接受方与发送方config版本相同才能成功、继续推进。**这是保证config版本逐个推进的重要措施。
+        **MigrateShards RPC**: MigrateShards RPC接收时，会更新自身维护的一个map：receiveConfigNum。这是一个从gid到configNum的映射，表示收到的来自gid的最大configNum。其中configNum来自Migrate Shards中的RPC，发送的是nextConfig的configNum。也就是说**正常情况下，<接受方的configNum应该大于等于比RPC参数中的configNum-1(也就是发送方发送时的configNum)>，在这种情况下，认为migrate成功，将对应shard的数据迁移过去，并且更新receiveConfigNum。如果不是这种情况，也就是configNum不止小1，则该RPC接收无效（超前检查，RPC超前，接收方还未将config版本同步到与发送方相同），这种情况将返回ErrConfigNotMatch，发送方会不断重试，直到接受方与发送方config版本相同才能成功、继续推进。**这是保证config版本逐个推进的重要措施。注意，也可以不重试，而是选择放弃当前check reconfig的过程，重新尝试，但这样效率可能偏低。
+    
+        注意configNum比发送方当时的configNum-1还要大也是可能的，这种情况也可以migrate成功，在接受方已经完成一次UpdateConfig，或是因为之前是outside group（见后）而config很大，也是可以正常接受的。如果发送方拒绝这种情况并重试，那么可能导致死锁！如果遵循上面这套逻辑，可以证明不会发生死锁，即使reconfig过程中有互相迁移shards的情况，也会因为receiveConfigNum先增加、再更新自身config的原因不会死锁。
     
         **Wait for Receive All Shards**是保证当前group已拥有所有nextConfig下属于自己的shard的过程。当receiveConfigNum中，所有gid对应的configNum都等于nextConfig的configNum时，说明它已经接收到所有属于自己的shard，那么已经可以正常提供新版本下的kv服务了，可以进入到Update Config环节。否则，等待receiveConfigNum全部最新。
     
@@ -455,10 +457,12 @@
         - 在Update Config时，需要把receiveConfigNum中gid属于leftGroupList的给删掉。
     
         - outsideGroupList中的group，不进行Migrate Shards和Wait for Receive All Shards，直接Update Config即可。
-    
+        
             所以注意，这些group可能出现超前现象：在allGroupList中的组还在维持一致、逐个推进config版本时，这些“局外组”可能早已直接连续更新到了最新的config。这其实不影响整体一致性，如果他们在后面join了进来，那个时候是不可能超前的。如果非要在“局外”状态时仍强行维护其config版本与allGroupList的一致性，可能需要一个全局的历史组合集，并且会导致一些不必要的维护开销。
     
+    - 问题6: 在GET和PUTAPPEND时，如果发现返回ErrWrongGroup，客户端需不需要推进序列号（MsgId）？
     
+        答案是否定的，客户端发起一次请求时，无论是什么错误（WrongLeader，Timeout，ErrWrongGroup、无法接受到返回结果等），都应该重试（有的错误需要换服务器作为其所认为的leader），对于ErrWrongGroup这个错误，要明白不是客户端的请求有问题，而是服务端的config没有更新（client维护的config落后，或者是server还没同步好），此时应该重试、直到config一致。作为一个操作整体，自然不需要更新序列号。
     
     
     

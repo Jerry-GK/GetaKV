@@ -25,7 +25,7 @@ const (
 )
 
 const (
-	WaitForConfigConsistentTimeOut = time.Millisecond * 2000
+	WaitForConfigConsistentTimeOut = time.Millisecond * 1000
 	TryNextGroupServerInterval     = time.Millisecond * 50
 )
 
