@@ -25,8 +25,8 @@ const (
 )
 
 const (
-	WaitForConfigConsistentTimeOut = time.Millisecond * 100
-	TryNextGroupServerInterval     = time.Millisecond * 20
+	WaitForConfigConsistentTimeOut = time.Millisecond * 2000
+	TryNextGroupServerInterval     = time.Millisecond * 50
 )
 
 type Err string
@@ -72,16 +72,16 @@ type GetReply struct {
 	Value string
 }
 
-type MigrateArgs struct {
-	ShardKvData map[string]string
-	ConfigNum   int
-	FromGid     int
-	IsNewGroup  bool
-	ClientId    TypeClientId
-	MsgId       ClerkMsgId
+type MigrateShardsArgs struct {
+	ShardsKvData map[string]string
+	ConfigNum    int
+	FromGid      int
+	IsNewGroup   bool
+	ClientId     TypeClientId
+	MsgId        ClerkMsgId
 }
 
-type MigrateReply struct {
+type MigrateShardsReply struct {
 	Err Err
 }
 
@@ -93,4 +93,25 @@ type UpdateConfigArgs struct {
 
 type UpdateConfigReply struct {
 	Err Err
+}
+
+type GetConfigArgs struct {
+	ClientId TypeClientId
+	MsgId    ClerkMsgId
+}
+
+type GetConfigReply struct {
+	Err    Err
+	Config shardmaster.Config
+}
+
+type GetShardsDataArgs struct {
+	Shards   []int
+	ClientId TypeClientId
+	MsgId    ClerkMsgId
+}
+
+type GetShardsDataReply struct {
+	Err        Err
+	ShardsData map[string]string
 }

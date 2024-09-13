@@ -390,6 +390,8 @@
     
         为了性能考虑，要尽可能充分利用每个group的资源，使得shards在group之间的分布尽量平均，在添加group和删除group时，也要重新调整分配关系。这种分配模式称为一个configuration，重新分配的过程是reconfiguration。
     
+    ### Lab4B        
+    
     - 问题2: 发生reconfig，需要迁移分片（migrate shards）时，是用RPC将shard发送到目标group中，还是用RPC向源server发送迁移请求、在reply中获取？
     
         理论上都可以，后者（请求法）在实现上更方便一些，只需请求所有数据完成即可完成自身的reconfig。
@@ -412,7 +414,7 @@
     
         要做到按顺序依此处理变更，需要在check reconfig的过程中先看是否是最新config，如果不是，利用shard master按照Num查找指定版本config的功能，获取当前config版本的下一个版本的config，来做更新。另外，要保证所有group的更新是按config版本一体化递增的，不能出现其中一个group连续更新、领先其他group好几个版本的情况，否则可能导致分片迁移顺序颠倒、得不到正确数据。
     
-    - 问题5: 如何做到一次处理一个config变更，让不同group之间保持一致？
+    - **问题5: 如何做到一次处理一个config变更，让不同group之间保持一致？**
     
         这是非常重要的问题，是shardkv系统设计的核心之一。考虑到一次check reconfig过程中发现需要更新一次config (**curConfig --> nextConfig**)版本，有三个步骤：
     

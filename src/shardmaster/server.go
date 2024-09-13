@@ -96,6 +96,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	res := sm.waitOp(op)
 	reply.WrongLeader = false
 	reply.Err = res.Err
+	labutil.PrintMessage(fmt.Sprintf("Join Success: %v", args.Servers))
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -128,6 +129,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	res := sm.waitOp(op)
 	reply.WrongLeader = false
 	reply.Err = res.Err
+	labutil.PrintMessage(fmt.Sprintf("Leave Success: %v", args.GIDs))
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {

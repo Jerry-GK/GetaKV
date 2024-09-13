@@ -11,9 +11,11 @@ package shardkv
 import (
 	"crypto/rand"
 	"math/big"
+	"strconv"
 	"time"
 
 	"../labrpc"
+	"../labutil"
 	"../shardmaster"
 )
 
@@ -127,7 +129,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				var reply PutAppendReply
 				ok := srv.Call("ShardKV.PutAppend", &args, &reply)
 				if ok && reply.Err == OK {
-					// labutil.PrintMessage(args.Op + ": key = " + key + ", value = " + value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
+					labutil.PrintMessage(args.Op + ": key = " + key + ", value = " + value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
