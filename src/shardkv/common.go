@@ -115,3 +115,13 @@ type GetShardsDataReply struct {
 	Err        Err
 	ShardsData map[string]string
 }
+
+type DeleteShardsDataArgs struct {
+	Shards   []int
+	ClientId TypeClientId
+	MsgId    ClerkMsgId
+}
+
+type DeleteShardsDataReply struct {
+	Err Err
+}

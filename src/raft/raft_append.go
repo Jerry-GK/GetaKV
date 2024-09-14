@@ -107,9 +107,10 @@ func (rf *Raft) RPC_CALLEE_AppendEntries(args *AppendEntriesArgs, reply *AppendE
 		return
 	}
 	//2. reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+	//this condition is very important
 	if rf.getLastLogIndex() < args.PrevLogIndex ||
-		((args.PrevLogIndex >= rf.lastIncludedIndex || (args.PrevLogIndex == 0 && rf.lastIncludedIndex == 0)) && args.PrevLogTerm != InvalidTerm &&
-			rf.getLogEntryByIndex(args.PrevLogIndex).Term != args.PrevLogTerm) {
+		(args.PrevLogIndex >= rf.lastIncludedIndex && args.PrevLogTerm != InvalidTerm &&
+			args.PrevLogIndex > 0 && rf.getLogEntryByIndex(args.PrevLogIndex).Term != args.PrevLogTerm) {
 		return
 	}
 	//3. if an existing entry conflicts with a new one (same index but different terms)

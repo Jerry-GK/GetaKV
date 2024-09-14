@@ -92,7 +92,7 @@ func (ck *Clerk) Get(key string) string {
 
 			switch reply.Err {
 			case OK, ErrNoKey:
-				// labutil.PrintMessage("GET" + ": key = " + key + ", value = " + value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
+				// labutil.PrintMessage("GET" + ": key = " + key + ", value = " + reply.Value + ", shard = " + strconv.Itoa(shard) + ", gid = " + strconv.Itoa(gid))
 				return reply.Value
 			case ErrWrongGroup:
 				time.Sleep(WaitForConfigConsistentTimeOut)
