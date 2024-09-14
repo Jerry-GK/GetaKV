@@ -400,9 +400,6 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	kv.checkReconfig()
 
 	// Your code here.
-	kv.lockReconfig()
-	defer kv.unlockReconfig() // must unlock at the end, unlock earlier might make migration lose data
-
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
@@ -787,6 +784,7 @@ func (kv *ShardKV) checkReconfig() {
 			}
 		}
 
+		deleteShards := make([]int, 0)
 		if !isOutSideGroup {
 			oldShardList := getShardListOf(curConfig, kv.gid)
 			nextShardList := getShardListOf(nextConfig, kv.gid)
@@ -841,6 +839,7 @@ func (kv *ShardKV) checkReconfig() {
 				// shards might be empty, just to inform other group in that case
 				// labutil.PrintMessage(kv.selfString() + "Migrate shard = " + fmt.Sprint(shards) + " from gid = " + fmt.Sprint(kvGid) + " to gid = " + fmt.Sprint(toGid) + ", nextConfig.Num = " + fmt.Sprint(nextConfig.Num))
 				kv.callMigrateShards(shards, kvGid, toGid, oldConfig, nextConfig, isNewGroup)
+				deleteShards = append(deleteShards, shards...)
 			}
 
 			for !kv.killed() {
@@ -857,6 +856,11 @@ func (kv *ShardKV) checkReconfig() {
 		// update config at last
 		kv.CallUpdateConfig(nextConfig)
 		// fmt.Println(kv.selfString() + "UpdateConfig success, curConfig.Num = " + fmt.Sprint(curConfig.Num) + ", nextConfig.Num = " + fmt.Sprint(nextConfig.Num))
+
+		// delete unused shards
+		if delete_unused_shards {
+			kv.CallDeleteShards(deleteShards)
+		}
 	} else {
 		kv.unlock()
 	}
@@ -918,9 +922,6 @@ func (kv *ShardKV) callMigrateShards(shards []int, fromGid int, toGid int, oldCo
 
 		switch migrateShardsReply.Err {
 		case OK:
-			if delete_unused_shards {
-				kv.CallDeleteShards(shards)
-			}
 			return
 		case ErrConfigNotMatch:
 			time.Sleep(WaitForConfigConsistentTimeOut)

@@ -476,7 +476,7 @@
     
     - 问题8: 删除废弃shards的时机是什么时候？能后台清理吗？（Challenge 1）
     
-        在本实验设计中，migrate shards发送方在RPC发送成功后是最佳的清理时机，此时调用上述的废弃分片数据内部请求CallDeleteShards即可。
+        在一次reconfig中，需要等migrate shards -> wait for receive all shards -> update config过程全部完成后再delete shards，调用上述的废弃分片数据内部请求CallDeleteShards即可。看似migrate shards发送方在RPC发送成功后是最佳的清理时机，但实际上此时config未更新，来自client的get请求（可能是旧config下的请求）可能发送到本服务器，且config能对得上（都是旧的），此时需要返回结果，而不能先删。注意，这是没实现partial migration时的逻辑，实现后有所改变（见后）。
     
         本实验kv数据存储是简单的kv map，这种设计下清理通过delete(key)完成，并且必须通过raft模块串行进行，无法通过后台GC线程滞后清理，否则很容易与后来写入的数据相冲突。
     
