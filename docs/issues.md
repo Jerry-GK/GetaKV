@@ -392,7 +392,7 @@
     
     ### Lab4B        
     
-    - 问题2: 发生reconfig，需要迁移分片（migrate shards）时，是用RPC将shard发送到目标group中，还是用RPC向源server发送迁移请求、在reply中获取？
+    - 问题1: 发生reconfig，需要迁移分片（migrate shards）时，是用RPC将shard发送到目标group中，还是用RPC向源server发送迁移请求、在reply中获取？
     
         理论上都可以，后者（请求法）在实现上更方便一些，只需请求所有数据完成即可完成自身的reconfig。
     
@@ -400,13 +400,13 @@
     
         本实验采用的是发送法。
     
-    - 问题3: 在kill group阶段，系统卡住是什么原因
+    - 问题2: 在kill group阶段，系统卡住是什么原因
     
         本实验中出现这个原因是因为在check reconfig中从shard master的query并没有超时检测，导致当关闭组内部分server后，剩下的server在此处可能会无限尝试，导致锁无法释放。
     
         加上超时检测即可。
     
-    - 问题4: 为什么一定要按顺序每次只处理一次config变更？怎样做到？
+    - 问题3: 为什么一定要按顺序每次只处理一次config变更？怎样做到？
     
         事实上，处理config变更时，需要利用到上一个旧的config的信息，来获取旧的分组等相关信息，来做shard迁移等工作。如果跳过几个config版本直接更新，那么只能用隔几代版本的旧的config了，但该config的版本未必与其他group中config的版本一致，获取到的分片信息可能是对不上的，自然也就无法正确migrate shards。
     
@@ -414,7 +414,7 @@
     
         要做到按顺序依此处理变更，需要在check reconfig的过程中先看是否是最新config，如果不是，利用shard master按照Num查找指定版本config的功能，获取当前config版本的下一个版本的config，来做更新。另外，要保证所有group的更新是按config版本一体化递增的，不能出现其中一个group连续更新、领先其他group好几个版本的情况，否则可能导致分片迁移顺序颠倒、得不到正确数据。
     
-    - **问题5: 如何做到一次处理一个config变更，让不同group之间保持一致？**
+    - **问题4: 如何做到一次处理一个config变更，让不同group之间保持一致？**
     
         这是非常重要的问题，是shardkv系统设计的核心之一。考虑到一次check reconfig过程中发现需要更新一次config (**curConfig --> nextConfig**)版本，有三个步骤：
     
@@ -424,9 +424,11 @@
     
         **Migrate Shards**是发送shard的过程，由当前group发出， 发送内容是curConfig下属于该group、但在nextConfig中归属于其他group的shard，这部份shard由一个简单的逻辑计算得出。接受方是这些shard在nextConfig下所属的group。这个过程通过RPC请求完成，可能一次性向多个group发送请求。注意服务器并不等待Migrate Shards的RPC接收到成功的信号，只负责发送。
     
-        **MigrateShards RPC**: MigrateShards RPC接收时，会更新自身维护的一个map：receiveConfigNum。这是一个从gid到configNum的映射，表示收到的来自gid的最大configNum。其中configNum来自Migrate Shards中的RPC，发送的是nextConfig的configNum。也就是说**正常情况下，<接受方的configNum应该大于等于比RPC参数中的configNum-1(也就是发送方发送时的configNum)>，在这种情况下，认为migrate成功，将对应shard的数据迁移过去，并且更新receiveConfigNum。如果不是这种情况，也就是configNum不止小1，则该RPC接收无效（超前检查，RPC超前，接收方还未将config版本同步到与发送方相同），这种情况将返回ErrConfigNotMatch，发送方会不断重试，直到接受方与发送方config版本相同才能成功、继续推进。**这是保证config版本逐个推进的重要措施。注意，也可以不重试，而是选择放弃当前check reconfig的过程，重新尝试，但这样效率可能偏低。
+        **MigrateShards RPC**: MigrateShards RPC接收时，会更新自身维护的一个map：**receiveConfigNum**。这是一个从gid到configNum的映射，表示收到的来自gid的最大configNum。其中configNum来自Migrate Shards中的RPC，发送的是nextConfig的configNum。也就是说**正常情况下，<接受方的configNum应该大于等于比RPC参数中的configNum-1(也就是发送方发送时的configNum)>，在这种情况下，认为migrate成功，将对应shard的数据迁移过去，并且更新receiveConfigNum。如果不是这种情况，也就是configNum不止小1，则该RPC接收无效（超前检查，RPC超前，接收方还未将config版本同步到与发送方相同），这种情况将返回ErrConfigNotMatch，发送方会不断重试，直到接受方与发送方config版本相同才能成功、继续推进。**这是保证config版本逐个推进的重要措施。注意，也可以不重试，而是选择放弃当前check reconfig的过程，重新尝试，但这样效率可能偏低。
     
         注意configNum比发送方当时的configNum-1还要大也是可能的，这种情况也可以migrate成功，在接受方已经完成一次UpdateConfig，或是因为之前是outside group（见后）而config很大，也是可以正常接受的。如果发送方拒绝这种情况并重试，那么可能导致死锁！如果遵循上面这套逻辑，可以证明不会发生死锁，即使reconfig过程中有互相迁移shards的情况，也会因为receiveConfigNum先增加、再更新自身config的原因不会死锁。
+    
+        注意：receiveConfigNum需要持久化！否则上次reconfig接收到部分RPC后中断，重启时再次check reconfig可能因未记录且RPC不会再发而导致卡住。
     
         **Wait for Receive All Shards**是保证当前group已拥有所有nextConfig下属于自己的shard的过程。当receiveConfigNum中，所有gid对应的configNum都等于nextConfig的configNum时，说明它已经接收到所有属于自己的shard，那么已经可以正常提供新版本下的kv服务了，可以进入到Update Config环节。否则，等待receiveConfigNum全部最新。
     
@@ -455,16 +457,16 @@
         - Wait for Receive All Shards的主体是allGroupList，所等待的组也是allGroupList。这与上面对应。
     
         - 在Update Config时，需要把receiveConfigNum中gid属于leftGroupList的给删掉。
-    
+        
         - outsideGroupList中的group，不进行Migrate Shards和Wait for Receive All Shards，直接Update Config即可。
         
             所以注意，这些group可能出现超前现象：在allGroupList中的组还在维持一致、逐个推进config版本时，这些“局外组”可能早已直接连续更新到了最新的config。这其实不影响整体一致性，如果他们在后面join了进来，那个时候是不可能超前的。如果非要在“局外”状态时仍强行维护其config版本与allGroupList的一致性，可能需要一个全局的历史组合集，并且会导致一些不必要的维护开销。
     
-    - 问题6: 在GET和PUTAPPEND时，如果发现返回ErrWrongGroup，客户端需不需要推进序列号（MsgId）？
+    - 问题5: 在GET和PUTAPPEND时，如果发现返回ErrWrongGroup，客户端需不需要推进序列号（MsgId）？
     
         答案是否定的，客户端发起一次请求时，无论是什么错误（WrongLeader，Timeout，ErrWrongGroup、无法接受到返回结果等），都应该重试（有的错误需要换服务器作为其所认为的leader），对于ErrWrongGroup这个错误，要明白不是客户端的请求有问题，而是服务端的config没有更新（client维护的config落后，或者是server还没同步好），此时应该重试、直到config一致。作为一个操作整体，自然不需要更新序列号。
     
-    - 问题7: 在这个实验中，group获取操作数据为什么也要走raft请求的模式（内部请求）？
+    - 问题6: 在这个实验中，group获取操作数据为什么也要走raft请求的模式（内部请求）？
     
         这是本实验一个非常重要的细节，**那就是在check reconfig过程中，获取自身config、更新自身config、获取自身分片数据、删除废弃分片数据这几个操作，不能直接操作成员变量，必须要通过raft请求、走raft的流程，发起内部请求（internal RPC，其实不是RPC）**。
     
@@ -472,9 +474,11 @@
     
         获取当前config、删除废弃分片数据同理。
     
-        内部请求类似client中实现的RPC请求调用函数，但不需要调用RPC，只需要直接掉用自身服务器的raft接口、超时重试即可。由于checkreconfig一定是leader发起的，正常情况下不会在内部请求中出现WrongLeader的情况（如果出现直接返回、放弃即可）
+        内部请求类似client中实现的RPC请求调用函数，但不需要调用RPC，只需要直接掉用自身服务器的raft接口、超时重试即可。由于checkreconfig一定是leader发起的，正常情况下不会在内部请求中出现WrongLeader的情况（如果出现直接返回、放弃即可）。
     
-    - 问题8: 删除废弃shards的时机是什么时候？能后台清理吗？（Challenge 1）
+        注意：server本身作为client发送RPC时，同一个组的server的自身clientId必须相同！本实验中直接让其等于gid。这里千万不可像普通client端一样在StartServer里用随机数设置clientId，否则是明显的逻辑错误，会导致raft模块应用错乱。并且msgId必须持久化。
+    
+    - 问题7: 删除废弃shards的时机是什么时候？能后台清理吗？（Challenge 1）
     
         在一次reconfig中，需要等migrate shards -> wait for receive all shards -> update config过程全部完成后再delete shards，调用上述的废弃分片数据内部请求CallDeleteShards即可。看似migrate shards发送方在RPC发送成功后是最佳的清理时机，但实际上此时config未更新，来自client的get请求（可能是旧config下的请求）可能发送到本服务器，且config能对得上（都是旧的），此时需要返回结果，而不能先删。注意，这是没实现partial migration时的逻辑，实现后有所改变（见后）。
     

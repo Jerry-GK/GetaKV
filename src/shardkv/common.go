@@ -16,12 +16,13 @@ import (
 //
 
 const (
-	OK                = "OK"
-	ErrNoKey          = "ErrNoKey"
-	ErrWrongGroup     = "ErrWrongGroup"
-	ErrWrongLeader    = "ErrWrongLeader"
-	ErrTimeout        = "ErrTimeout"
-	ErrConfigNotMatch = "ErrConfigNotMatch"
+	OK                 = "OK"
+	ErrNoKey           = "ErrNoKey"
+	ErrWrongGroup      = "ErrWrongGroup"
+	ErrWrongLeader     = "ErrWrongLeader"
+	ErrTimeout         = "ErrTimeout"
+	ErrConfigNotMatch  = "ErrConfigNotMatch"
+	ErrAlreadyMigrated = "ErrAlreadyMigrated"
 )
 
 const (
@@ -86,9 +87,10 @@ type MigrateShardsReply struct {
 }
 
 type UpdateConfigArgs struct {
-	Config   shardmaster.Config
-	ClientId TypeClientId
-	MsgId    ClerkMsgId
+	Config       shardmaster.Config
+	DeleteShards []int
+	ClientId     TypeClientId
+	MsgId        ClerkMsgId
 }
 
 type UpdateConfigReply struct {
@@ -105,6 +107,26 @@ type GetConfigReply struct {
 	Config shardmaster.Config
 }
 
+type GetMigratingShardsArgs struct {
+	ClientId TypeClientId
+	MsgId    ClerkMsgId
+}
+
+type UpdateMigratingShardsArgs struct {
+	MigratingShards []int
+	ClientId        TypeClientId
+	MsgId           ClerkMsgId
+}
+
+type UpdateMigratingShardsReply struct {
+	Err Err
+}
+
+type GetMigratingShardsReply struct {
+	Err             Err
+	MigratingShards []int
+}
+
 type GetShardsDataArgs struct {
 	Shards   []int
 	ClientId TypeClientId
@@ -116,12 +138,12 @@ type GetShardsDataReply struct {
 	ShardsData map[string]string
 }
 
-type DeleteShardsDataArgs struct {
-	Shards   []int
+type GetReceiveConfigNumArgs struct {
 	ClientId TypeClientId
 	MsgId    ClerkMsgId
 }
 
-type DeleteShardsDataReply struct {
-	Err Err
+type GetReceiveConfigNumReply struct {
+	Err              Err
+	ReceiveConfigNum map[int]int
 }

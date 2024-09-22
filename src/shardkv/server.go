@@ -23,23 +23,27 @@ const (
 )
 
 const (
-	GET           = "Get"
-	PUT           = "Put"
-	APPEND        = "Append"
-	MIGRATESHARDS = "MigrateShards"
-	UPDATECONFIG  = "UpdateConfig"
-	GETCONFIG     = "GetConfig"
-	GETSHARDSDATA = "GetShardsData"
-	DELETESHARDS  = "DeleteShards"
+	GET                  = "Get"
+	PUT                  = "Put"
+	APPEND               = "Append"
+	MIGRATESHARDS        = "MigrateShards"
+	UPDATECONFIG         = "UpdateConfig"
+	GETCONFIG            = "GetConfig"
+	GETSHARDSDATA        = "GetShardsData"
+	GETMIGRATINGSARDS    = "GetMigratingShards"
+	UPDATEMIGRATINGSARDS = "UpdateMigratingShards"
+	GETRECEIVECONFIGNUM  = "GetReceiveConfigNum"
 )
 
 const delete_unused_shards = true
 
 type ExeResult struct {
-	Err          Err
-	Value        string
-	Config       shardmaster.Config
-	ShardsKvData map[string]string
+	Err              Err
+	Value            string
+	Config           shardmaster.Config
+	ShardsKvData     map[string]string
+	MigratingShards  []int
+	ReceiveConfigNum map[int]int
 }
 
 type Op struct {
@@ -68,18 +72,18 @@ type Op struct {
 	IsNewGroup   bool
 
 	// for UpdateConfig
-	Config shardmaster.Config
+	Config       shardmaster.Config
+	DeleteShards []int
 
 	// for GetShardsData
 	GetShards []int
 
-	// for DeleteShards
-	DeleteShards []int
+	// for UpdateMigratingShards
+	MigratingShards []int
 }
 
 type ShardKV struct {
 	mu           sync.Mutex
-	mu_reconfig  sync.Mutex
 	me           int
 	rf           *raft.Raft
 	applyCh      chan raft.ApplyMsg
@@ -100,15 +104,19 @@ type ShardKV struct {
 	config           shardmaster.Config
 	receiveConfigNum map[int]int //record the configNum receive from each group
 
+	migratingShards []int // shards that is being migrated in a config (reset empty after config completely updated)
+
 	clientId  TypeClientId
 	nextMsgId ClerkMsgId
 
 	checkReconfigTimer *time.Timer
+
+	randID int64 // for debug
 }
 
 func (kv *ShardKV) selfString() string {
 	// Group[gid] - Server[me]
-	s := "Group[" + fmt.Sprint(kv.gid) + "] - Server[" + fmt.Sprint(kv.me) + "]: "
+	s := "Group[" + fmt.Sprint(kv.gid) + "] - Server[" + fmt.Sprint(kv.me) + "] - ID[" + fmt.Sprint(kv.randID) + "]: "
 	return s
 }
 
@@ -125,16 +133,6 @@ func (kv *ShardKV) lock() {
 func (kv *ShardKV) unlock() {
 	// labutil.PrintMessage(kv.selfString() + "unlock")
 	kv.mu.Unlock()
-}
-
-func (kv *ShardKV) lockReconfig() {
-	// labutil.PrintMessage(kv.selfString() + "lock muReconfig")
-	kv.mu_reconfig.Lock()
-}
-
-func (kv *ShardKV) unlockReconfig() {
-	// labutil.PrintMessage(kv.selfString() + "unlock muReconfig")
-	kv.mu_reconfig.Unlock()
 }
 
 // internal virtual client caller
@@ -161,11 +159,11 @@ func (kv *ShardKV) CallGetConfig() shardmaster.Config {
 }
 
 // internal virtual client caller
-func (kv *ShardKV) CallUpdateConfig(config shardmaster.Config) {
+func (kv *ShardKV) CallUpdateConfig(config shardmaster.Config, deleteShards []int) {
 	kv.lock()
 	kv.nextMsgId = kv.getNextMsgId()
 	kv.unlock()
-	args := UpdateConfigArgs{Config: config, ClientId: kv.clientId, MsgId: kv.nextMsgId}
+	args := UpdateConfigArgs{Config: config, DeleteShards: deleteShards, ClientId: kv.clientId, MsgId: kv.nextMsgId}
 
 	for {
 		var reply UpdateConfigReply
@@ -176,6 +174,75 @@ func (kv *ShardKV) CallUpdateConfig(config shardmaster.Config) {
 			return
 		case ErrWrongLeader:
 			return // return immediately if wrong leader for internal request (never here theoretically)
+		case ErrTimeout:
+			time.Sleep(TryNextGroupServerInterval) // retry after timeout for internal request
+			continue
+		}
+	}
+}
+
+// internal virtual client caller
+func (kv *ShardKV) CallGetMigratingShards() []int {
+	kv.lock()
+	kv.nextMsgId = kv.getNextMsgId()
+	kv.unlock()
+	args := GetMigratingShardsArgs{ClientId: kv.clientId, MsgId: kv.nextMsgId}
+
+	for {
+		var reply GetMigratingShardsReply
+		kv.GetMigratingShards(&args, &reply)
+
+		switch reply.Err {
+		case OK:
+			return reply.MigratingShards
+		case ErrWrongLeader:
+			return []int{} // return immediately if wrong leader for internal request (never here theoretically)
+		case ErrTimeout:
+			time.Sleep(TryNextGroupServerInterval) // retry after timeout for internal request
+			continue
+		}
+	}
+}
+
+// internal virtual client caller
+func (kv *ShardKV) CallUpdateMigratingShards(migratingShards []int) {
+	kv.lock()
+	kv.nextMsgId = kv.getNextMsgId()
+	kv.unlock()
+	args := UpdateMigratingShardsArgs{MigratingShards: migratingShards, ClientId: kv.clientId, MsgId: kv.nextMsgId}
+
+	for {
+		var reply UpdateMigratingShardsReply
+		// fmt.Println(kv.selfString() + "CallUpdateMigratingShards, migratingShards = " + fmt.Sprint(migratingShards))
+		kv.UpdateMigratingShards(&args, &reply)
+
+		switch reply.Err {
+		case OK:
+			return
+		case ErrWrongLeader:
+			return // return immediately if wrong leader for internal request (never here theoretically)
+		case ErrTimeout:
+			time.Sleep(TryNextGroupServerInterval) // retry after timeout for internal request
+			continue
+		}
+	}
+}
+
+func (kv *ShardKV) callGetReceiveConfigNum() map[int]int {
+	kv.lock()
+	kv.nextMsgId = kv.getNextMsgId()
+	kv.unlock()
+	args := GetReceiveConfigNumArgs{ClientId: kv.clientId, MsgId: kv.nextMsgId}
+
+	for {
+		var reply GetReceiveConfigNumReply
+		kv.GetReceiveConfigNum(&args, &reply)
+
+		switch reply.Err {
+		case OK:
+			return reply.ReceiveConfigNum
+		case ErrWrongLeader:
+			return map[int]int{} // return immediately if wrong leader for internal request (never here theoretically)
 		case ErrTimeout:
 			time.Sleep(TryNextGroupServerInterval) // retry after timeout for internal request
 			continue
@@ -206,34 +273,12 @@ func (kv *ShardKV) CallGetShardsData(shards []int) map[string]string {
 	}
 }
 
-// internal virtual client caller
-func (kv *ShardKV) CallDeleteShards(shards []int) {
-	kv.lock()
-	kv.nextMsgId = kv.getNextMsgId()
-	kv.unlock()
-	args := DeleteShardsDataArgs{Shards: shards, ClientId: kv.clientId, MsgId: kv.nextMsgId}
-
-	for {
-		var reply DeleteShardsDataReply
-		kv.DeleteShards(&args, &reply)
-
-		switch reply.Err {
-		case OK:
-			return
-		case ErrWrongLeader:
-			return // return immediately if wrong leader for internal request (never here theoretically)
-		case ErrTimeout:
-			time.Sleep(TryNextGroupServerInterval) // retry after timeout for internal request
-			continue
-		}
-	}
-}
-
 // Shard KV RPCs
 func (kv *ShardKV) MigrateShards(args *MigrateShardsArgs, reply *MigrateShardsReply) {
+	killed := kv.killed()
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
-	if !isLeader {
+	if !isLeader || killed {
 		reply.Err = ErrWrongLeader
 		kv.unlock()
 		return
@@ -260,9 +305,10 @@ func (kv *ShardKV) MigrateShards(args *MigrateShardsArgs, reply *MigrateShardsRe
 
 // only for internal request
 func (kv *ShardKV) GetConfig(args *GetConfigArgs, reply *GetConfigReply) {
+	killed := kv.killed()
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
-	if !isLeader {
+	if !isLeader || killed {
 		reply.Err = ErrWrongLeader
 		kv.unlock()
 		return
@@ -286,9 +332,10 @@ func (kv *ShardKV) GetConfig(args *GetConfigArgs, reply *GetConfigReply) {
 
 // only for internal request
 func (kv *ShardKV) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigReply) {
+	killed := kv.killed()
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
-	if !isLeader {
+	if !isLeader || killed {
 		reply.Err = ErrWrongLeader
 		kv.unlock()
 		return
@@ -296,12 +343,68 @@ func (kv *ShardKV) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigReply
 
 	kv.nextOpId = kv.getNextOpId()
 	op := Op{
-		Method:   UPDATECONFIG,
+		Method:       UPDATECONFIG,
+		ClientId:     args.ClientId,
+		MsgId:        args.MsgId,
+		ServerId:     kv.me,
+		OpId:         kv.nextOpId,
+		Config:       args.Config,
+		DeleteShards: args.DeleteShards,
+	}
+	kv.unlock()
+
+	res := kv.waitOp(op)
+
+	reply.Err = res.Err
+}
+
+// only for internal request
+func (kv *ShardKV) GetMigratingShards(args *GetMigratingShardsArgs, reply *GetMigratingShardsReply) {
+	killed := kv.killed()
+	kv.lock()
+	_, isLeader := kv.rf.GetState()
+	if !isLeader || killed {
+		reply.Err = ErrWrongLeader
+		kv.unlock()
+		return
+	}
+
+	kv.nextOpId = kv.getNextOpId()
+	op := Op{
+		Method:   GETMIGRATINGSARDS,
 		ClientId: args.ClientId,
 		MsgId:    args.MsgId,
 		ServerId: kv.me,
 		OpId:     kv.nextOpId,
-		Config:   args.Config,
+	}
+	kv.unlock()
+
+	res := kv.waitOp(op)
+
+	reply.MigratingShards = res.MigratingShards
+
+	reply.Err = res.Err
+}
+
+// only for internal request
+func (kv *ShardKV) UpdateMigratingShards(args *UpdateMigratingShardsArgs, reply *UpdateMigratingShardsReply) {
+	killed := kv.killed()
+	kv.lock()
+	_, isLeader := kv.rf.GetState()
+	if !isLeader || killed {
+		reply.Err = ErrWrongLeader
+		kv.unlock()
+		return
+	}
+
+	kv.nextOpId = kv.getNextOpId()
+	op := Op{
+		Method:          UPDATEMIGRATINGSARDS,
+		ClientId:        args.ClientId,
+		MsgId:           args.MsgId,
+		ServerId:        kv.me,
+		OpId:            kv.nextOpId,
+		MigratingShards: args.MigratingShards,
 	}
 	kv.unlock()
 
@@ -312,9 +415,10 @@ func (kv *ShardKV) UpdateConfig(args *UpdateConfigArgs, reply *UpdateConfigReply
 
 // only for internal request
 func (kv *ShardKV) GetShardsData(args *GetShardsDataArgs, reply *GetShardsDataReply) {
+	killed := kv.killed()
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
-	if !isLeader {
+	if !isLeader || killed {
 		reply.Err = ErrWrongLeader
 		kv.unlock()
 		return
@@ -338,10 +442,11 @@ func (kv *ShardKV) GetShardsData(args *GetShardsDataArgs, reply *GetShardsDataRe
 }
 
 // only for internal request
-func (kv *ShardKV) DeleteShards(args *DeleteShardsDataArgs, reply *DeleteShardsDataReply) {
+func (kv *ShardKV) GetReceiveConfigNum(args *GetReceiveConfigNumArgs, reply *GetReceiveConfigNumReply) {
+	killed := kv.killed()
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
-	if !isLeader {
+	if !isLeader || killed {
 		reply.Err = ErrWrongLeader
 		kv.unlock()
 		return
@@ -349,28 +454,27 @@ func (kv *ShardKV) DeleteShards(args *DeleteShardsDataArgs, reply *DeleteShardsD
 
 	kv.nextOpId = kv.getNextOpId()
 	op := Op{
-		Method:       DELETESHARDS,
-		ClientId:     args.ClientId,
-		MsgId:        args.MsgId,
-		ServerId:     kv.me,
-		OpId:         kv.nextOpId,
-		DeleteShards: args.Shards,
+		Method:   GETRECEIVECONFIGNUM,
+		ClientId: args.ClientId,
+		MsgId:    args.MsgId,
+		ServerId: kv.me,
+		OpId:     kv.nextOpId,
 	}
 	kv.unlock()
 
 	res := kv.waitOp(op)
 
+	reply.ReceiveConfigNum = res.ReceiveConfigNum
 	reply.Err = res.Err
 }
 
 // outside client request
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	kv.checkReconfig()
-
+	killed := kv.killed()
 	// Your code here.
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
-	if !isLeader {
+	if !isLeader || killed {
 		reply.Err = ErrWrongLeader
 		kv.unlock()
 		return
@@ -397,12 +501,13 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 
 // outside client request
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	kv.checkReconfig()
+	killed := kv.killed()
+	//kv.checkReconfig()
 
 	// Your code here.
 	kv.lock()
 	_, isLeader := kv.rf.GetState()
-	if !isLeader {
+	if !isLeader || killed {
 		reply.Err = ErrWrongLeader
 		kv.unlock()
 		return
@@ -433,9 +538,10 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // turn off debug output from this instance.
 func (kv *ShardKV) Kill() {
 	kv.lock()
+	// fmt.Println(kv.selfString()+"Killing server", ", lastApplyMsgId = ", kv.lastApplyMsgId)
 	defer kv.unlock()
 	atomic.StoreInt32(&kv.dead, 1)
-	kv.saveSnapshot(0) //save before quit
+	// kv.saveSnapshot(0) //save before quit
 	kv.rf.Kill()
 	close(kv.stopCh)
 }
@@ -474,6 +580,8 @@ func (kv *ShardKV) waitOp(op Op) (res ExeResult) {
 			res.Value = res_.Value
 			res.Config = res_.Config
 			res.ShardsKvData = res_.ShardsKvData
+			res.MigratingShards = res_.MigratingShards
+			res.ReceiveConfigNum = res_.ReceiveConfigNum
 			kv.lock()
 			kv.deleteOutputCh(op.OpId)
 			kv.unlock()
@@ -507,7 +615,7 @@ func (kv *ShardKV) waitApply() {
 			kv.lock()
 
 			lastMsgId, ok := kv.lastApplyMsgId[op.ClientId]
-			isApplied := ok && lastMsgId == op.MsgId
+			isApplied := ok && lastMsgId >= op.MsgId
 
 			//issue: is lastMsgId > op.MsgId possible?
 			//ans: maybe possible, if the client re-send the request?
@@ -533,7 +641,13 @@ func (kv *ShardKV) waitApply() {
 				}
 			case PUT:
 				if !isApplied {
-					if kv.config.Shards[op.DataShard] != kv.gid {
+					migrating := false
+					for _, shard := range kv.migratingShards {
+						if shard == op.DataShard {
+							migrating = true
+						}
+					}
+					if kv.config.Shards[op.DataShard] != kv.gid || migrating {
 						ExeResult.Err = ErrWrongGroup
 						break
 					}
@@ -542,27 +656,50 @@ func (kv *ShardKV) waitApply() {
 				}
 			case APPEND:
 				if !isApplied {
-					if kv.config.Shards[op.DataShard] != kv.gid {
+					migrating := false
+					for _, shard := range kv.migratingShards {
+						if shard == op.DataShard {
+							migrating = true
+						}
+					}
+					if kv.config.Shards[op.DataShard] != kv.gid || migrating {
 						ExeResult.Err = ErrWrongGroup
 						break
 					}
 					kv.kvData[op.Key] += op.Value
+					// fmt.Println(kv.selfString() + "Append, key = " + op.Key + ", value = " + op.Value)
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
 			case MIGRATESHARDS:
 				if !isApplied {
-					// check kv.config.Num >= op.ConfigNum-1 to process reconfig one at a time, this condition is critical!
-					// new group does not need to check configNum
-					if kv.config.Num >= op.ConfigNum-1 || op.IsNewGroup {
+					configNum := kv.receiveConfigNum[op.OldGid]
+					if configNum >= op.ConfigNum || kv.config.Num > op.ConfigNum-1 {
+						// avoid duplicate migrate during restart (otherwise appended data during restart may be recovered!)
+						ExeResult.Err = ErrAlreadyMigrated
+					} else if kv.config.Num == op.ConfigNum-1 || op.IsNewGroup {
+						// check kv.config.Num >= op.ConfigNum-1 to process reconfig one at a time, this condition is critical!
+						// new group does not need to check configNum
 						for key, value := range op.ShardsKvData {
 							kv.kvData[key] = value
 						}
 						kv.receiveConfigNum[op.OldGid] = op.ConfigNum
-						// fmt.Println(kv.selfString() + "Migrate success, kv.config.Num = " + fmt.Sprint(kv.config.Num) + ", op.ConfigNum = " + fmt.Sprint(op.ConfigNum) + ", oldGid = " + fmt.Sprint(op.OldGid) + ", msgId = " + fmt.Sprint(op.MsgId))
+						// fmt.Println(kv.selfString()+"Migrate success, kv.config.Num = "+fmt.Sprint(kv.config.Num)+", op.ConfigNum = "+fmt.Sprint(op.ConfigNum)+", oldGid = "+fmt.Sprint(op.OldGid)+", msgId = "+fmt.Sprint(op.MsgId), ", shardsData = "+fmt.Sprint(op.ShardsKvData))
 					} else {
 						ExeResult.Err = ErrConfigNotMatch
-						// fmt.Println(kv.selfString() + "Migrate failed, kv.config.Num = " + fmt.Sprint(kv.config.Num) + ", op.ConfigNum = " + fmt.Sprint(op.ConfigNum) + ", oldGid = " + fmt.Sprint(op.OldGid) + ", msgId = " + fmt.Sprint(op.MsgId))
+						// fmt.Println(kv.selfString()+"Migrate failed, kv.config.Num = "+fmt.Sprint(kv.config.Num)+", op.ConfigNum = "+fmt.Sprint(op.ConfigNum)+", oldGid = "+fmt.Sprint(op.OldGid)+", msgId = "+fmt.Sprint(op.MsgId), ", shardsData = "+fmt.Sprint(op.ShardsKvData))
 						break // do not update lastApplyMsgId
+					}
+					kv.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
+			case GETCONFIG:
+				if !isApplied {
+					// deep copy kv.config to ExeResult.Config
+					ExeResult.Config = shardmaster.Config{}
+					ExeResult.Config.Num = kv.config.Num
+					ExeResult.Config.Shards = kv.config.Shards
+					ExeResult.Config.Groups = make(map[int][]string)
+					for gid, servers := range kv.config.Groups {
+						ExeResult.Config.Groups[gid] = servers
 					}
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
@@ -582,23 +719,48 @@ func (kv *ShardKV) waitApply() {
 								leftGroupList = append(leftGroupList, gid)
 							}
 						}
+
+						// 1.reset receiveConfigNum of left groups
 						for _, gid := range leftGroupList {
 							delete(kv.receiveConfigNum, gid)
 						}
 
+						// 2.reset migrating shards empty
+						kv.migratingShards = make([]int, 0)
+
+						// 3.delete unused shards
+						if delete_unused_shards {
+							for key := range kv.kvData {
+								shard := key2shard(key)
+								for _, s := range op.DeleteShards {
+									if s == shard {
+										delete(kv.kvData, key)
+										break
+									}
+								}
+							}
+						}
+
+						// 4.update config
 						kv.config = op.Config
 					}
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
-			// two internal request
-			case GETCONFIG:
+			case GETMIGRATINGSARDS:
 				if !isApplied {
-					ExeResult.Config = kv.config
+					// no need to deep copy an array
+					ExeResult.MigratingShards = kv.migratingShards
+					kv.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
+			case UPDATEMIGRATINGSARDS:
+				if !isApplied {
+					kv.migratingShards = op.MigratingShards
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
 			case GETSHARDSDATA:
+				shardsKvData := make(map[string]string)
 				if !isApplied {
-					shardsKvData := make(map[string]string)
+					// deep copy the shards data
 					for key, value := range kv.kvData {
 						shard := key2shard(key)
 						for _, s := range op.GetShards {
@@ -608,21 +770,15 @@ func (kv *ShardKV) waitApply() {
 							}
 						}
 					}
-
 					ExeResult.ShardsKvData = shardsKvData
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
-			case DELETESHARDS:
+			case GETRECEIVECONFIGNUM:
 				if !isApplied {
-					for key := range kv.kvData {
-						shard := key2shard(key)
-						for _, s := range op.DeleteShards {
-							if s == shard {
-								// fmt.Println(kv.selfString() + "delete " + key)
-								delete(kv.kvData, key)
-								break
-							}
-						}
+					// deep copy kv.receiveConfigNum to ExeResult.ReceiveConfigNum
+					ExeResult.ReceiveConfigNum = make(map[int]int)
+					for gid, num := range kv.receiveConfigNum {
+						ExeResult.ReceiveConfigNum[gid] = num
 					}
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
@@ -643,9 +799,9 @@ func (kv *ShardKV) waitApply() {
 
 // must have outer lock!
 func (kv *ShardKV) saveSnapshot(index int) {
-	//save snapshot only when raftstate size exceeds
+	//save snapshot only when raftstate size exceeds or forced(index=0)
 	//Start(cmd) -> apply -> raftstate size grows -> (if exceeds) save snapshot
-	if index == 0 || kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
+	if kv.maxraftstate != -1 && (index == 0 || kv.maxraftstate <= kv.persister.RaftStateSize()) {
 		kvData := kv.getSnapshotData()
 		//labutil.PrintDebug("Server[" + fmt.Sprint(kv.me) + "]: Saving snapshot, index = " + fmt.Sprint(index))
 		kv.rf.SavePersistAndSnapshot(index, kvData)
@@ -659,6 +815,9 @@ func (kv *ShardKV) getSnapshotData() []byte {
 	e.Encode(kv.kvData)
 	e.Encode(kv.lastApplyMsgId)
 	e.Encode(kv.config)
+	e.Encode(kv.receiveConfigNum)
+	e.Encode(kv.migratingShards)
+	e.Encode(kv.nextMsgId)
 	data := w.Bytes()
 	return data
 }
@@ -673,15 +832,24 @@ func (kv *ShardKV) readSnapshot(data []byte) {
 	var kvData map[string]string
 	var lastApplyMsgId map[TypeClientId]ClerkMsgId
 	var config shardmaster.Config
+	var receiveConfigNum map[int]int
+	var migratingShards []int
+	var nextMsgId ClerkMsgId
 	if d.Decode(&kvData) != nil ||
 		d.Decode(&lastApplyMsgId) != nil ||
-		d.Decode(&config) != nil {
+		d.Decode(&config) != nil ||
+		d.Decode(&receiveConfigNum) != nil ||
+		d.Decode(&migratingShards) != nil ||
+		d.Decode(&nextMsgId) != nil {
 		labutil.PrintException("KVServer[" + fmt.Sprint(kv.me) + "]: readSnapshot failed while decoding!")
 		labutil.PanicSystem()
 	} else {
 		kv.kvData = kvData
 		kv.lastApplyMsgId = lastApplyMsgId
 		kv.config = config
+		kv.receiveConfigNum = receiveConfigNum
+		kv.migratingShards = migratingShards
+		kv.nextMsgId = nextMsgId
 		// labutil.PrintMessage(kv.selfString() + "readSnapshot, config = " + fmt.Sprint(kv.config.Num))
 	}
 }
@@ -722,13 +890,12 @@ func (kv *ShardKV) queryConfig(num int) (shardmaster.Config, bool) {
 }
 
 func (kv *ShardKV) checkReconfig() {
-	kv.lockReconfig()
-	defer kv.unlockReconfig()
+	killed := kv.killed()
 	kv.lock()
 
 	// only leader check reconfig
 	_, isLeader := kv.rf.GetState()
-	if !isLeader {
+	if !isLeader || killed {
 		kv.unlock()
 		return
 	}
@@ -824,6 +991,9 @@ func (kv *ShardKV) checkReconfig() {
 
 			// migrate migratedShards to other groups
 			for _, toGid := range allGroupList {
+				if kv.killed() {
+					return
+				}
 				if toGid == kvGid {
 					continue
 				}
@@ -838,6 +1008,24 @@ func (kv *ShardKV) checkReconfig() {
 
 				// shards might be empty, just to inform other group in that case
 				// labutil.PrintMessage(kv.selfString() + "Migrate shard = " + fmt.Sprint(shards) + " from gid = " + fmt.Sprint(kvGid) + " to gid = " + fmt.Sprint(toGid) + ", nextConfig.Num = " + fmt.Sprint(nextConfig.Num))
+				if len(shards) > 0 {
+					migratingShards := kv.CallGetMigratingShards()
+					// join shards, avoid duplicate
+					for _, shard := range shards {
+						found := false
+						for _, s := range migratingShards {
+							if s == shard {
+								found = true
+								break
+							}
+						}
+						if !found {
+							migratingShards = append(migratingShards, shard)
+						}
+					}
+					kv.CallUpdateMigratingShards(migratingShards)
+				}
+				// TODO: callMigrateShards in using go routines
 				kv.callMigrateShards(shards, kvGid, toGid, oldConfig, nextConfig, isNewGroup)
 				deleteShards = append(deleteShards, shards...)
 			}
@@ -853,27 +1041,24 @@ func (kv *ShardKV) checkReconfig() {
 			kv.unlock()
 		}
 
-		// update config at last
-		kv.CallUpdateConfig(nextConfig)
-		// fmt.Println(kv.selfString() + "UpdateConfig success, curConfig.Num = " + fmt.Sprint(curConfig.Num) + ", nextConfig.Num = " + fmt.Sprint(nextConfig.Num))
-
-		// delete unused shards
-		if delete_unused_shards {
-			kv.CallDeleteShards(deleteShards)
+		if kv.killed() {
+			return
 		}
+		// update config at last (delete unused shards and reset migratingShards empty will be done here atomically!)
+		kv.CallUpdateConfig(nextConfig, deleteShards)
+		// fmt.Println(kv.selfString() + "UpdateConfig success, curConfig.Num = " + fmt.Sprint(curConfig.Num) + ", nextConfig.Num = " + fmt.Sprint(nextConfig.Num))
 	} else {
 		kv.unlock()
 	}
 }
 
 func (kv *ShardKV) receiveFromAllGroups(curConfig shardmaster.Config, groupList []int) bool {
-	kv.lock()
-	defer kv.unlock()
+	receiveConfigNum := kv.callGetReceiveConfigNum()
 	for _, gid := range groupList {
 		if gid == kv.gid {
 			continue
 		}
-		if configNum, ok := kv.receiveConfigNum[gid]; !ok || configNum < curConfig.Num+1 { // curConfig.Num+1 == nextConfig.Num
+		if configNum, ok := receiveConfigNum[gid]; !ok || configNum < curConfig.Num+1 { // curConfig.Num+1 == nextConfig.Num
 			// fmt.Println(kv.selfString() + "Not receive from gid = " + fmt.Sprint(gid) + ", configNum = " + fmt.Sprint(configNum) + ", kv.nextconfig.Num = " + fmt.Sprint(curConfig.Num+1))
 			return false
 		}
@@ -895,11 +1080,15 @@ func (kv *ShardKV) callMigrateShards(shards []int, fromGid int, toGid int, oldCo
 		}
 	}
 
-	// fmt.Println(kv.selfString() + "Call Migrate shard = " + fmt.Sprint(shards) + " from gid = " + fmt.Sprint(fromGid) + " to gid = " + fmt.Sprint(toGid) + ", nextConfig.Num = " + fmt.Sprint(nextConfig.Num))
-
 	// send data to new group
 	kv.nextMsgId = kv.getNextMsgId()
 	kv.unlock()
+
+	if kv.killed() {
+		return // neccessary! avoid "ghost" migration (killed during get shards data, but still migrate empty data)
+	}
+
+	// fmt.Println(kv.selfString()+"Call Migrate shard = "+fmt.Sprint(shards)+" from gid = "+fmt.Sprint(fromGid)+" to gid = "+fmt.Sprint(toGid)+", msgId = "+fmt.Sprint(kv.nextMsgId)+", nextConfig.Num = "+fmt.Sprint(nextConfig.Num), ", shardsData = "+fmt.Sprint(shardsData))
 
 	migrateShardsArgs := MigrateShardsArgs{ShardsKvData: shardsData, ConfigNum: nextConfig.Num, FromGid: fromGid, IsNewGroup: isNewGroup, ClientId: kv.clientId, MsgId: kv.nextMsgId} // curConfig.NUm = nextConfig.Num
 	allToServers := oldConfig.Groups[toGid]
@@ -926,6 +1115,8 @@ func (kv *ShardKV) callMigrateShards(shards []int, fromGid int, toGid int, oldCo
 		case ErrConfigNotMatch:
 			time.Sleep(WaitForConfigConsistentTimeOut)
 			continue
+		case ErrAlreadyMigrated:
+			return // give up if already migrated
 		case ErrWrongLeader:
 			leaderId = (leaderId + 1) % len(allToServers)
 			time.Sleep(TryNextGroupServerInterval)
@@ -993,24 +1184,30 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	// Use something like this to talk to the shardmaster:
 	kv.mck = shardmaster.MakeClerk(kv.masters)
-	kv.config = kv.mck.Query(-1)
-	kv.receiveConfigNum = make(map[int]int)
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.stopCh = make(chan struct{})
 	kv.outPutCh = make(map[TypeOpId]chan ExeResult)
 
+	// persisted variables, will be reconvered if there is a snapshot
 	kv.kvData = make(map[string]string)
 	kv.lastApplyMsgId = make(map[TypeClientId]ClerkMsgId)
+	kv.config = shardmaster.Config{}
+	kv.receiveConfigNum = make(map[int]int)
+	kv.migratingShards = make([]int, 0)
+	kv.clientId = TypeClientId(gid) // use gid as clientId(servers of the same group must have the same clientId)
+	kv.nextMsgId = 0
 
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	kv.clientId = TypeClientId(nrand()) //assume no duplicate
-	kv.nextMsgId = 0
-
 	kv.checkReconfigTimer = time.NewTimer(0)
 
+	// randID is a randon number between 100 to 999
+	kv.randID = 100 + nrand()%900
+
 	kv.readSnapshot(persister.ReadSnapshot())
+
+	// fmt.Println(kv.selfString()+"StartServer", "migratingShards = ", kv.migratingShards, ", lastApplyMsgId = ", kv.lastApplyMsgId, ", kvDataSize = "+fmt.Sprint(len(kv.kvData))+", configNum = "+fmt.Sprint(kv.config.Num))
 
 	go kv.waitApply()
 

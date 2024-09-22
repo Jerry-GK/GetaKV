@@ -164,7 +164,7 @@ func (kv *KVServer) Kill() {
 	kv.lock()
 	defer kv.unlock()
 	atomic.StoreInt32(&kv.dead, 1)
-	kv.saveSnapshot(0) //save before quit
+	// kv.saveSnapshot(0) //save before quit
 	kv.rf.Kill()
 	// Your code here, if desired.
 	close(kv.stopCh)
@@ -236,7 +236,7 @@ func (kv *KVServer) waitApply() {
 			kv.lock()
 
 			lastMsgId, ok := kv.lastApplyMsgId[op.ClientId]
-			isApplied := ok && lastMsgId == op.MsgId
+			isApplied := ok && lastMsgId >= op.MsgId
 
 			//issue: is lastMsgId > op.MsgId possible?
 			//ans: maybe possible, if the client re-send the request?
@@ -286,7 +286,7 @@ func (kv *KVServer) waitApply() {
 func (kv *KVServer) saveSnapshot(index int) {
 	//save snapshot only when raftstate size exceeds
 	//Start(cmd) -> apply -> raftstate size grows -> (if exceeds) save snapshot
-	if index == 0 || kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
+	if kv.maxraftstate != -1 && (index == 0 || kv.maxraftstate <= kv.persister.RaftStateSize()) {
 		kvData := kv.getSnapshotData()
 		//labutil.PrintDebug("Server[" + fmt.Sprint(kv.me) + "]: Saving snapshot, index = " + fmt.Sprint(index))
 		kv.rf.SavePersistAndSnapshot(index, kvData)
