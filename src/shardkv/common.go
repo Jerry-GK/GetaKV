@@ -26,7 +26,7 @@ const (
 )
 
 const (
-	WaitForConfigConsistentTimeOut = time.Millisecond * 1000
+	WaitForConfigConsistentTimeOut = time.Millisecond * 500
 	TryNextGroupServerInterval     = time.Millisecond * 50
 )
 
@@ -78,6 +78,7 @@ type MigrateShardsArgs struct {
 	ConfigNum    int
 	FromGid      int
 	IsNewGroup   bool
+	Shards       []int
 	ClientId     TypeClientId
 	MsgId        ClerkMsgId
 }
@@ -112,6 +113,11 @@ type GetMigratingShardsArgs struct {
 	MsgId    ClerkMsgId
 }
 
+type GetReceivedShardsArgs struct {
+	ClientId TypeClientId
+	MsgId    ClerkMsgId
+}
+
 type UpdateMigratingShardsArgs struct {
 	MigratingShards []int
 	ClientId        TypeClientId
@@ -125,6 +131,11 @@ type UpdateMigratingShardsReply struct {
 type GetMigratingShardsReply struct {
 	Err             Err
 	MigratingShards []int
+}
+
+type GetReceivedShardsReply struct {
+	Err            Err
+	ReceivedShards []int
 }
 
 type GetShardsDataArgs struct {

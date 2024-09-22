@@ -16,15 +16,15 @@ It is based on the labs of **[MIT-6.824](http://nil.csail.mit.edu/6.824/2020/sch
 
   - Lab3A: KV on Raft ✅
   - Lab3B: Log Compaction / Snapshot ✅
-- **Lab4: Shard KV** ⏳
+- **Lab4: Shard KV** ✅
 
   - Lab4A: Shard Master ✅
-  - Lab4B: Sharded KV Server ⏳
+  - Lab4B: Sharded KV Server ✅
 - **Improvement**
     - Add simple parser and persistent file to save.
     - More clear structure.
 
-Latest progress: Lab4A finished. Reliable shard master.
+Latest progress: Lab4B finished.
 
 ## K/V System Architecture:
 

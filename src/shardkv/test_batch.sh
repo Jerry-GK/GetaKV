@@ -1,8 +1,8 @@
 #!/bin/bash
 # This is a script for batch testing
 
-testCommand="go test -run TestChallenge1Concurrent -race"
-outputFile="log_all_2.txt"
+testCommand="go test -race"
+outputFile="log.txt"
 iterNum=500
 timeoutDuration="300s"  # 5 minutes
 

@@ -21,7 +21,7 @@ func randstring(n int) string {
 	b := make([]byte, 2*n)
 	crand.Read(b)
 	s := base64.URLEncoding.EncodeToString(b)
-	return s[0:n] + "|"
+	return s[0:n]
 }
 
 func makeSeed() int64 {

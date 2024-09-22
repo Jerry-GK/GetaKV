@@ -31,11 +31,14 @@ const (
 	GETCONFIG            = "GetConfig"
 	GETSHARDSDATA        = "GetShardsData"
 	GETMIGRATINGSARDS    = "GetMigratingShards"
+	GETRECEIVEDSHARDS    = "GetReceivedShards"
 	UPDATEMIGRATINGSARDS = "UpdateMigratingShards"
 	GETRECEIVECONFIGNUM  = "GetReceiveConfigNum"
 )
 
-const delete_unused_shards = true
+const delete_unused_shards = true // if delete unused shards data
+
+const enable_access_partial_shards = true // if access shards that has been received during reconfig even if the reconfig has not finished
 
 type ExeResult struct {
 	Err              Err
@@ -43,6 +46,7 @@ type ExeResult struct {
 	Config           shardmaster.Config
 	ShardsKvData     map[string]string
 	MigratingShards  []int
+	ReceivedShards   []int
 	ReceiveConfigNum map[int]int
 }
 
@@ -66,10 +70,11 @@ type Op struct {
 	OpId     TypeOpId
 
 	// for Migrate
-	ShardsKvData map[string]string
-	ConfigNum    int
-	OldGid       int
-	IsNewGroup   bool
+	ShardsKvData  map[string]string
+	ConfigNum     int
+	OldGid        int
+	IsNewGroup    bool
+	MigrateShards []int
 
 	// for UpdateConfig
 	Config       shardmaster.Config
@@ -104,7 +109,9 @@ type ShardKV struct {
 	config           shardmaster.Config
 	receiveConfigNum map[int]int //record the configNum receive from each group
 
-	migratingShards []int // shards that is being migrated in a config (reset empty after config completely updated)
+	migratingShards []int // shards that is being migrated in a reconfig (reset empty after config completely updated)
+
+	receivedShards []int // shards that has been received in a reconfig (reset empty after config completely updated)
 
 	clientId  TypeClientId
 	nextMsgId ClerkMsgId
@@ -273,6 +280,29 @@ func (kv *ShardKV) CallGetShardsData(shards []int) map[string]string {
 	}
 }
 
+// internal virtual client caller (this is not used temporarily)
+func (kv *ShardKV) CallGetReceivedShards() []int {
+	kv.lock()
+	kv.nextMsgId = kv.getNextMsgId()
+	kv.unlock()
+	args := GetReceivedShardsArgs{ClientId: kv.clientId, MsgId: kv.nextMsgId}
+
+	for {
+		var reply GetReceivedShardsReply
+		kv.GetReceivedShards(&args, &reply)
+
+		switch reply.Err {
+		case OK:
+			return reply.ReceivedShards
+		case ErrWrongLeader:
+			return []int{} // return immediately if wrong leader for internal request (never here theoretically)
+		case ErrTimeout:
+			time.Sleep(TryNextGroupServerInterval) // retry after timeout for internal request
+			continue
+		}
+	}
+}
+
 // Shard KV RPCs
 func (kv *ShardKV) MigrateShards(args *MigrateShardsArgs, reply *MigrateShardsReply) {
 	killed := kv.killed()
@@ -286,15 +316,16 @@ func (kv *ShardKV) MigrateShards(args *MigrateShardsArgs, reply *MigrateShardsRe
 
 	kv.nextOpId = kv.getNextOpId()
 	op := Op{
-		Method:       MIGRATESHARDS,
-		ClientId:     args.ClientId,
-		MsgId:        args.MsgId,
-		ServerId:     kv.me,
-		OpId:         kv.nextOpId,
-		ShardsKvData: args.ShardsKvData,
-		ConfigNum:    args.ConfigNum,
-		OldGid:       args.FromGid,
-		IsNewGroup:   args.IsNewGroup,
+		Method:        MIGRATESHARDS,
+		ClientId:      args.ClientId,
+		MsgId:         args.MsgId,
+		ServerId:      kv.me,
+		OpId:          kv.nextOpId,
+		ShardsKvData:  args.ShardsKvData,
+		ConfigNum:     args.ConfigNum,
+		OldGid:        args.FromGid,
+		IsNewGroup:    args.IsNewGroup,
+		MigrateShards: args.Shards,
 	}
 	kv.unlock()
 
@@ -468,6 +499,34 @@ func (kv *ShardKV) GetReceiveConfigNum(args *GetReceiveConfigNumArgs, reply *Get
 	reply.Err = res.Err
 }
 
+// only for internal request
+func (kv *ShardKV) GetReceivedShards(args *GetReceivedShardsArgs, reply *GetReceivedShardsReply) {
+	killed := kv.killed()
+	kv.lock()
+	_, isLeader := kv.rf.GetState()
+	if !isLeader || killed {
+		reply.Err = ErrWrongLeader
+		kv.unlock()
+		return
+	}
+
+	kv.nextOpId = kv.getNextOpId()
+	op := Op{
+		Method:   GETRECEIVEDSHARDS,
+		ClientId: args.ClientId,
+		MsgId:    args.MsgId,
+		ServerId: kv.me,
+		OpId:     kv.nextOpId,
+	}
+	kv.unlock()
+
+	res := kv.waitOp(op)
+
+	reply.ReceivedShards = res.ReceivedShards
+
+	reply.Err = res.Err
+}
+
 // outside client request
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	killed := kv.killed()
@@ -581,6 +640,7 @@ func (kv *ShardKV) waitOp(op Op) (res ExeResult) {
 			res.Config = res_.Config
 			res.ShardsKvData = res_.ShardsKvData
 			res.MigratingShards = res_.MigratingShards
+			res.ReceivedShards = res_.ReceivedShards
 			res.ReceiveConfigNum = res_.ReceiveConfigNum
 			kv.lock()
 			kv.deleteOutputCh(op.OpId)
@@ -625,10 +685,21 @@ func (kv *ShardKV) waitApply() {
 			// }
 
 			//real apply
+
+			// can only get data from the shard that belongs to the group in current config, or partial received shards during reconfig
+			received := false
+			for _, shard := range kv.receivedShards {
+				if shard == op.DataShard {
+					received = true
+					break
+				}
+			}
+			partialAccessable := enable_access_partial_shards && received
+
 			switch op.Method {
 			case GET:
 				// No data modification
-				if kv.config.Shards[op.DataShard] != kv.gid {
+				if kv.config.Shards[op.DataShard] != kv.gid && !partialAccessable {
 					ExeResult.Err = ErrWrongGroup
 					break
 				} else if kv.kvData[op.Key] == "" {
@@ -647,7 +718,7 @@ func (kv *ShardKV) waitApply() {
 							migrating = true
 						}
 					}
-					if kv.config.Shards[op.DataShard] != kv.gid || migrating {
+					if (kv.config.Shards[op.DataShard] != kv.gid || migrating) && !partialAccessable {
 						ExeResult.Err = ErrWrongGroup
 						break
 					}
@@ -662,7 +733,7 @@ func (kv *ShardKV) waitApply() {
 							migrating = true
 						}
 					}
-					if kv.config.Shards[op.DataShard] != kv.gid || migrating {
+					if (kv.config.Shards[op.DataShard] != kv.gid || migrating) && !partialAccessable {
 						ExeResult.Err = ErrWrongGroup
 						break
 					}
@@ -684,6 +755,8 @@ func (kv *ShardKV) waitApply() {
 						}
 						kv.receiveConfigNum[op.OldGid] = op.ConfigNum
 						// fmt.Println(kv.selfString()+"Migrate success, kv.config.Num = "+fmt.Sprint(kv.config.Num)+", op.ConfigNum = "+fmt.Sprint(op.ConfigNum)+", oldGid = "+fmt.Sprint(op.OldGid)+", msgId = "+fmt.Sprint(op.MsgId), ", shardsData = "+fmt.Sprint(op.ShardsKvData))
+
+						kv.receivedShards = append(kv.receivedShards, op.MigrateShards...)
 					} else {
 						ExeResult.Err = ErrConfigNotMatch
 						// fmt.Println(kv.selfString()+"Migrate failed, kv.config.Num = "+fmt.Sprint(kv.config.Num)+", op.ConfigNum = "+fmt.Sprint(op.ConfigNum)+", oldGid = "+fmt.Sprint(op.OldGid)+", msgId = "+fmt.Sprint(op.MsgId), ", shardsData = "+fmt.Sprint(op.ShardsKvData))
@@ -728,7 +801,10 @@ func (kv *ShardKV) waitApply() {
 						// 2.reset migrating shards empty
 						kv.migratingShards = make([]int, 0)
 
-						// 3.delete unused shards
+						// 3. reset received shards empty
+						kv.receivedShards = make([]int, 0)
+
+						// 4.delete unused shards
 						if delete_unused_shards {
 							for key := range kv.kvData {
 								shard := key2shard(key)
@@ -780,6 +856,12 @@ func (kv *ShardKV) waitApply() {
 					for gid, num := range kv.receiveConfigNum {
 						ExeResult.ReceiveConfigNum[gid] = num
 					}
+					kv.lastApplyMsgId[op.ClientId] = op.MsgId
+				}
+			case GETRECEIVEDSHARDS:
+				if !isApplied {
+					// no need to deep copy an array
+					ExeResult.ReceivedShards = kv.receivedShards
 					kv.lastApplyMsgId[op.ClientId] = op.MsgId
 				}
 			default:
@@ -1090,7 +1172,7 @@ func (kv *ShardKV) callMigrateShards(shards []int, fromGid int, toGid int, oldCo
 
 	// fmt.Println(kv.selfString()+"Call Migrate shard = "+fmt.Sprint(shards)+" from gid = "+fmt.Sprint(fromGid)+" to gid = "+fmt.Sprint(toGid)+", msgId = "+fmt.Sprint(kv.nextMsgId)+", nextConfig.Num = "+fmt.Sprint(nextConfig.Num), ", shardsData = "+fmt.Sprint(shardsData))
 
-	migrateShardsArgs := MigrateShardsArgs{ShardsKvData: shardsData, ConfigNum: nextConfig.Num, FromGid: fromGid, IsNewGroup: isNewGroup, ClientId: kv.clientId, MsgId: kv.nextMsgId} // curConfig.NUm = nextConfig.Num
+	migrateShardsArgs := MigrateShardsArgs{ShardsKvData: shardsData, ConfigNum: nextConfig.Num, FromGid: fromGid, IsNewGroup: isNewGroup, Shards: shards, ClientId: kv.clientId, MsgId: kv.nextMsgId} // curConfig.NUm = nextConfig.Num
 	allToServers := oldConfig.Groups[toGid]
 	if len(allToServers) == 0 {
 		allToServers = nextConfig.Groups[toGid]
@@ -1195,6 +1277,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.config = shardmaster.Config{}
 	kv.receiveConfigNum = make(map[int]int)
 	kv.migratingShards = make([]int, 0)
+	kv.receivedShards = make([]int, 0)
 	kv.clientId = TypeClientId(gid) // use gid as clientId(servers of the same group must have the same clientId)
 	kv.nextMsgId = 0
 

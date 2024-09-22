@@ -485,6 +485,14 @@
         本实验kv数据存储是简单的kv map，这种设计下清理通过delete(key)完成，并且必须通过raft模块串行进行，无法通过后台GC线程滞后清理，否则很容易与后来写入的数据相冲突。
     
         如果想实现后台GC，可能需要给key加上configNum后缀，查询时补上后缀查询，删除时删除带有落后config后缀的数据。由于直接delete效率也还行，而上述方案有额外代价，所以暂且不实现。
+        
+    - 问题8: 如何实现partial access，即在一次reconfig中，某个group只收到了一部份shard的数据，就能够在这部份数据上正常读写。
+    
+        只需要出了migratingShards外，再维护一个**receivedShards**数组。表示一次reconfig中已经收到的shards，在收到一个其他group的migrateShards的RPC并完成迁移后append，在config更新后清空。
+    
+        对于GET和PUTAPPEND，判断数据的shard是否属于receivedShards，如果是，那么即使按当前config来看数据并不属于该组，也认为可以正常读写，而不是返回ErrWrongGroup。
+    
+        receivedShards也是server内部状态，但读写均在raft逻辑内，可以不实现internal request的读写接口。
     
     
     
