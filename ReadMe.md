@@ -73,6 +73,15 @@ Latest progress: Lab4B finished.
 
 ## Test and Execution Result
 
+- Raft KV
+
 <img src="assets/image-20230421203111961.png" alt="image-20230421203111961" style="zoom:40%;" />
 
+- KV system（single node）
+
 <img src="assets/image-20230421203502670.png" alt="image-20230421203502670" style="zoom:40%;" />
+
+- Sharded KV
+
+<img src="assets/image-20240922223652055.png" alt="image-20240922223652055" style="zoom:45%;" />
+

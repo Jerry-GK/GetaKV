@@ -1,7 +1,6 @@
 package shardmaster
 
 import (
-	"fmt"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -69,7 +68,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 		sm.unlock()
 		return
 	}
-	labutil.PrintMessage(fmt.Sprintf("Join: %v", args.Servers))
+	// labutil.PrintMessage(fmt.Sprintf("Join: %v", args.Servers))
 
 	sm.nextOpId = sm.getNextOpId()
 	// copy join args
@@ -96,7 +95,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	res := sm.waitOp(op)
 	reply.WrongLeader = false
 	reply.Err = res.Err
-	labutil.PrintMessage(fmt.Sprintf("Join Success: %v", args.Servers))
+	// labutil.PrintMessage(fmt.Sprintf("Join Success: %v", args.Servers))
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -110,7 +109,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		sm.unlock()
 		return
 	}
-	labutil.PrintMessage(fmt.Sprintf("Leave: %v", args.GIDs))
+	// labutil.PrintMessage(fmt.Sprintf("Leave: %v", args.GIDs))
 
 	sm.nextOpId = sm.getNextOpId()
 	op := Op{
@@ -129,7 +128,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 	res := sm.waitOp(op)
 	reply.WrongLeader = false
 	reply.Err = res.Err
-	labutil.PrintMessage(fmt.Sprintf("Leave Success: %v", args.GIDs))
+	// labutil.PrintMessage(fmt.Sprintf("Leave Success: %v", args.GIDs))
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
